@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  GOTOOLCHAIN: auto
+
 jobs:
   test:
     name: test
@@ -15,6 +18,9 @@ jobs:
 
       - name: Set up Go
         uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
 
       - name: Download modules
         run: go mod download
@@ -49,6 +55,9 @@ jobs:
 
       - name: Set up Go
         uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
 
       - name: Download modules
         run: go mod download
