@@ -1,0 +1,448 @@
+// Package proxy provides the HTTP query-cost gate and Elasticsearch forwarding.
+package proxy
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"es-querycost/internal/auth"
+	"es-querycost/internal/config"
+	"es-querycost/internal/cost"
+	"es-querycost/internal/logger"
+	"es-querycost/internal/metrics"
+	"es-querycost/internal/query"
+	"es-querycost/internal/rules"
+	"es-querycost/internal/validate"
+)
+
+// SearchRequest is the body expected by the gate's /search endpoint.
+type SearchRequest struct {
+	Query   string         `json:"query"`
+	Index   string         `json:"index"`
+	Context map[string]any `json:"context"`
+	// Source is an optional raw Elasticsearch query body. If empty the query
+	// is forwarded as a URI query parameter.
+	Source map[string]any `json:"source,omitempty"`
+}
+
+// SearchResponse is returned when a query is denied.
+type SearchResponse struct {
+	Allowed bool        `json:"allowed"`
+	Cost    float64     `json:"cost"`
+	Reason  string      `json:"reason,omitempty"`
+	Report  cost.Report `json:"report,omitempty"`
+}
+
+// Server wires together the cost gate and the Elasticsearch proxy.
+type Server struct {
+	cfg           config.Config
+	model         cost.Model
+	engine        *rules.Engine
+	validator     validate.Validator
+	authenticator auth.Authenticator
+	metrics       *metrics.Metrics
+	logger        *slog.Logger
+	client        *http.Client
+	target        *url.URL
+}
+
+// NewServer creates a Server. It returns an error if the Elasticsearch URL is invalid.
+func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	validator := cfg.BuildValidator()
+	var m *metrics.Metrics
+	if cfg.MetricsEnabled {
+		m = metrics.New()
+	}
+	return newServer(cfg, validator, cfg.BuildAuthenticator(), m, logger)
+}
+
+// NewServerWithValidator is mainly for tests.
+func NewServerWithValidator(cfg config.Config, validator validate.Validator, m *metrics.Metrics, logger *slog.Logger) (*Server, error) {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return newServer(cfg, validator, auth.NoOp{}, m, logger)
+}
+
+func newServer(cfg config.Config, validator validate.Validator, authenticator auth.Authenticator, m *metrics.Metrics, logger *slog.Logger) (*Server, error) {
+	target, err := url.Parse(cfg.ElasticsearchURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid elasticsearch url: %w", err)
+	}
+	timeout, err := parseProxyTimeout(cfg.ProxyTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{
+		cfg:           cfg,
+		model:         cfg.BuildCostModel(),
+		engine:        cfg.BuildEngine(),
+		validator:     validator,
+		authenticator: authenticator,
+		metrics:       m,
+		logger:        logger,
+		client:        &http.Client{Timeout: timeout},
+		target:        target,
+	}, nil
+}
+
+// Handler returns the http.Handler for the gate.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search", s.handleSearch)
+	mux.HandleFunc("/validate", s.handleValidate)
+	mux.HandleFunc("/healthz", s.handleHealthz)
+	if s.metrics != nil && s.cfg.MetricsPath != "" {
+		mux.Handle(s.cfg.MetricsPath, s.metrics.Handler())
+	}
+	handler := logger.Middleware(s.logger, s.cfg.LogRequests)(mux)
+	return handler
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.metrics != nil {
+		s.metrics.RecordRequest("/search")
+	}
+
+	req, ok := s.parseAndAuth(w, r, "/search")
+	if !ok {
+		return
+	}
+
+	evalStart := time.Now()
+	decision, ok := s.evaluate(w, r, req, evalStart)
+	if !ok {
+		return
+	}
+	if !decision.Allowed {
+		respondJSON(w, http.StatusPaymentRequired, SearchResponse{
+			Allowed: false,
+			Cost:    decision.Report.Cost,
+			Reason:  decision.Reason,
+			Report:  decision.Report,
+		})
+		return
+	}
+
+	query := s.injectDefaultWindow(req.Query, decision.AST, req.Context)
+
+	upstream, err := s.buildUpstreamURL(req, query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var outBody io.Reader
+	if req.Source != nil {
+		src := req.Source
+		if _, ok := src["query"]; !ok {
+			src["query"] = map[string]any{"query_string": map[string]any{"query": query}}
+		}
+		b, _ := json.Marshal(src)
+		outBody = bytes.NewReader(b)
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstream, outBody)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	copyHeaders(outReq.Header, r.Header)
+	if outBody != nil {
+		outReq.Header.Set("Content-Type", "application/json")
+	}
+
+	proxyStart := time.Now()
+	resp, err := s.client.Do(outReq)
+	if s.metrics != nil {
+		s.metrics.ObserveProxy(time.Since(proxyStart).Seconds())
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		if s.logger != nil {
+			s.logger.Error("error copying response", slog.String("error", err.Error()))
+		}
+	}
+}
+
+func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.metrics != nil {
+		s.metrics.RecordRequest("/validate")
+	}
+
+	req, ok := s.parseAndAuth(w, r, "/validate")
+	if !ok {
+		return
+	}
+
+	evalStart := time.Now()
+	decision, ok := s.evaluate(w, r, req, evalStart)
+	if !ok {
+		return
+	}
+
+	status := http.StatusOK
+	if !decision.Allowed {
+		status = http.StatusPaymentRequired
+	}
+	respondJSON(w, status, SearchResponse{
+		Allowed: decision.Allowed,
+		Cost:    decision.Report.Cost,
+		Reason:  decision.Reason,
+		Report:  decision.Report,
+	})
+}
+
+func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path string) (SearchRequest, bool) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return SearchRequest{}, false
+	}
+	defer r.Body.Close()
+
+	var req SearchRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return SearchRequest{}, false
+	}
+	if req.Query == "" {
+		http.Error(w, "query is required", http.StatusBadRequest)
+		return SearchRequest{}, false
+	}
+
+	authCtx, err := s.authenticator.Authenticate(r)
+	if err != nil {
+		if s.metrics != nil {
+			s.metrics.RecordDenial("auth_failed")
+		}
+		if s.logger != nil {
+			s.logger.Warn("authentication failed", traceAttr(r.Context()), slog.String("error", err.Error()))
+		}
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return SearchRequest{}, false
+	}
+	req.Context = mergeContext(authCtx.ToMap(), req.Context)
+	return req, true
+}
+
+func (s *Server) evaluate(w http.ResponseWriter, r *http.Request, req SearchRequest, evalStart time.Time) (evalDecision, bool) {
+	ast, queryUsed, err := s.resolveQuery(r.Context(), req.Query, req.Index)
+	if err != nil {
+		if s.metrics != nil {
+			s.metrics.RecordDenial("invalid_query")
+			s.metrics.ObserveEval(time.Since(evalStart).Seconds())
+		}
+		if s.logger != nil {
+			s.logger.Warn("query denied", traceAttr(r.Context()), slog.String("reason", err.Error()), slog.String("phase", "validation"))
+		}
+		respondJSON(w, http.StatusBadRequest, SearchResponse{
+			Allowed: false,
+			Reason:  err.Error(),
+		})
+		return evalDecision{}, false
+	}
+
+	report := cost.Estimate(ast, s.model)
+	decision := s.engine.Evaluate(queryUsed, ast, report, req.Context)
+	if s.metrics != nil {
+		s.metrics.ObserveEval(time.Since(evalStart).Seconds())
+		s.metrics.ObserveCost(report.Cost)
+	}
+	if !decision.Allowed {
+		if s.metrics != nil {
+			s.metrics.RecordDenial(decision.Reason)
+		}
+		if s.logger != nil {
+			s.logger.Warn("query denied", traceAttr(r.Context()), slog.String("reason", decision.Reason), slog.Float64("cost", decision.Report.Cost))
+		}
+	}
+	return evalDecision{Allowed: decision.Allowed, Report: decision.Report, Reason: decision.Reason, AST: ast}, true
+}
+
+type evalDecision struct {
+	Allowed bool
+	Reason  string
+	Report  cost.Report
+	AST     query.Node
+}
+
+func (s *Server) resolveQuery(ctx context.Context, queryStr, index string) (query.Node, string, error) {
+	ast, err := query.Parse(queryStr)
+	if err == nil && s.cfg.Validator != "elasticsearch" {
+		return ast, queryStr, nil
+	}
+
+	result, vErr := s.validator.Validate(ctx, index, queryStr)
+	if vErr != nil {
+		return nil, "", fmt.Errorf("elasticsearch validation failed: %w", vErr)
+	}
+	if !result.Valid {
+		return nil, "", fmt.Errorf("invalid query: %s", result.Error)
+	}
+
+	if err == nil {
+		return ast, queryStr, nil
+	}
+
+	// Local parse failed but Elasticsearch accepted the query. Try to parse
+	// its normalised explanation so we can still estimate cost.
+	if result.Explanation != "" {
+		if expAST, expErr := query.Parse(result.Explanation); expErr == nil {
+			return expAST, result.Explanation, nil
+		}
+	}
+
+	return nil, "", fmt.Errorf("query syntax not supported for cost estimation: %v", err)
+}
+
+func (s *Server) injectDefaultWindow(queryStr string, ast query.Node, ctx map[string]any) string {
+	if s.cfg.RequireWindow {
+		return queryStr
+	}
+	qr := rules.QueryWindow{DateFields: s.cfg.DateFields}
+	if _, found, _ := qr.FindWindow(ast, time.Now()); found {
+		return queryStr
+	}
+	plan := rules.PlanFromContext(ctx)
+	window := s.cfg.PlanWindow(plan)
+	field := s.cfg.DateField
+	if field == "" {
+		field = "@timestamp"
+	}
+	return fmt.Sprintf("(%s) AND %s:[now-%s TO now]", queryStr, field, window)
+}
+
+func (s *Server) buildUpstreamURL(req SearchRequest, query string) (string, error) {
+	index := strings.Trim(req.Index, "/")
+	path := "/_search"
+	if index != "" {
+		path = "/" + index + path
+	}
+	upstream := strings.TrimRight(s.target.String(), "/") + path
+	if req.Source == nil {
+		u, err := url.Parse(upstream)
+		if err != nil {
+			return "", err
+		}
+		q := u.Query()
+		q.Set("q", query)
+		u.RawQuery = q.Encode()
+		upstream = u.String()
+	}
+	return upstream, nil
+}
+
+func copyHeaders(dst, src http.Header) {
+	for k, vs := range src {
+		lk := strings.ToLower(k)
+		if lk == "content-length" || lk == "host" {
+			continue
+		}
+		for _, v := range vs {
+			dst.Add(k, v)
+		}
+	}
+}
+
+func respondJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// mergeContext returns a new map with base values overridden by values from
+// override. It avoids mutating either input.
+func mergeContext(base, override map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
+}
+
+func traceAttr(ctx context.Context) slog.Attr {
+	return slog.String("trace_id", logger.TraceIDFromContext(ctx))
+}
+
+func parseProxyTimeout(s string) (time.Duration, error) {
+	if s == "" {
+		return 30 * time.Second, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid proxy_timeout %q: %w", s, err)
+	}
+	return d, nil
+}
+
+func (s *Server) UpdateConfig(cfg config.Config) error {
+	timeout, err := parseProxyTimeout(cfg.ProxyTimeout)
+	if err != nil {
+		return err
+	}
+	target, err := url.Parse(cfg.ElasticsearchURL)
+	if err != nil {
+		return fmt.Errorf("invalid elasticsearch url: %w", err)
+	}
+
+	oldAuth := s.authenticator
+	s.cfg = cfg
+	s.model = cfg.BuildCostModel()
+	s.engine = cfg.BuildEngine()
+	s.validator = cfg.BuildValidator()
+	s.authenticator = cfg.BuildAuthenticator()
+	s.client.Timeout = timeout
+	s.target = target
+
+	go func() {
+		if err := oldAuth.Close(); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("failed to close previous authenticator", slog.String("error", err.Error()))
+			}
+		}
+	}()
+	return nil
+}
+
+// Close releases resources held by the server.
+func (s *Server) Close() error {
+	if s.authenticator != nil {
+		return s.authenticator.Close()
+	}
+	return nil
+}

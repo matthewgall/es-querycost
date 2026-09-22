@@ -1,0 +1,79 @@
+listen_addr: ":8080"
+elasticsearch_url: "http://localhost:9200"
+
+# Validator to use: "local" (default) or "elasticsearch".
+# When set to "elasticsearch", queries are sent to _validate/query before
+# cost estimation, and its normalised explanation is used as a fallback
+# when the local parser does not recognise the syntax.
+validator: "local"
+
+# Prometheus metrics endpoint.
+metrics_enabled: true
+metrics_path: "/metrics"
+
+# Authentication: none, apikey, jwt, or jwks.
+auth:
+  type: "none"
+  # api_keys:
+  #   my-secret-key:
+  #     user_id: "user-1"
+  #     plan: "pro"
+  # jwt_secret: "change-me"   # for type: jwt
+  # jwks_url: "https://idp/.well-known/jwks.json"  # for type: jwks
+  # jwt_issuer: "https://idp"
+  # jwt_audience: "es-querycost"
+  # jwt_plan_claim: "plan"
+  # jwt_user_claim: "sub"
+
+# Logging configuration.
+log_level: "info"       # debug, info, warn, error
+log_format: "json"      # json or text
+log_requests: true      # access logging
+
+# Field used when injecting a default date window.
+date_field: "@timestamp"
+
+# Recognised date fields for window checks.
+date_fields:
+  - "@timestamp"
+  - "timestamp"
+  - "date"
+  - "created_at"
+
+# When true, queries without a date window are rejected. When false, a window
+# is silently added before proxying to Elasticsearch.
+require_window: false
+
+cost_model:
+  term_cost: 1
+  phrase_cost: 2
+  wildcard_multiplier: 10
+  leading_wildcard_cost: 50
+  match_all_cost: 100
+  range_cost: 5
+  open_range_cost: 50
+  or_clause_cost: 3
+  depth_cost: 1
+  keyword_wildcard_multiplier: 3
+  field_weights:
+    asn: 0.5
+  default_field_weight: 1
+  default_search_field_penalty: 2
+
+plans:
+  free:
+    cost_limit: 50
+    window: "14d"
+  starter:
+    cost_limit: 200
+    window: "30d"
+  pro:
+    cost_limit: 1000
+    window: "60d"
+  enterprise:
+    cost_limit: 10000
+    window: "365d"
+
+forbidden_features:
+  - "match_all"
+  - "open_range"
