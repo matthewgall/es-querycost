@@ -6,21 +6,15 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  GOTOOLCHAIN: auto
-
 jobs:
   test:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          check-latest: true
+        uses: actions/setup-go@v7
 
       - name: Download modules
         run: go mod download
@@ -51,13 +45,10 @@ jobs:
             extension: .exe
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          check-latest: true
+        uses: actions/setup-go@v7
 
       - name: Download modules
         run: go mod download
@@ -72,7 +63,7 @@ jobs:
           go build -ldflags="-s -w" -o "$output" ./cmd/es-querycost
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: es-querycost-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/es-querycost-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.extension }}
