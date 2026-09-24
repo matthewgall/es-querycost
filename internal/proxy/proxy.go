@@ -23,6 +23,8 @@ import (
 	"es-querycost/internal/validate"
 )
 
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
 // SearchRequest is the body expected by the gate's /search endpoint.
 type SearchRequest struct {
 	Query   string         `json:"query"`
@@ -72,7 +74,7 @@ func NewServerWithValidator(cfg config.Config, validator validate.Validator, m *
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return newServer(cfg, validator, auth.NoOp{}, m, logger)
+	return newServer(cfg, validator, cfg.BuildAuthenticator(), m, logger)
 }
 
 func newServer(cfg config.Config, validator validate.Validator, authenticator auth.Authenticator, m *metrics.Metrics, logger *slog.Logger) (*Server, error) {
@@ -104,7 +106,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/validate", s.handleValidate)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	if s.metrics != nil && s.cfg.MetricsPath != "" {
-		mux.Handle(s.cfg.MetricsPath, s.metrics.Handler())
+		if _, ok := s.authenticator.(auth.NoOp); ok {
+			mux.Handle(s.cfg.MetricsPath, s.metrics.Handler())
+		} else {
+			mux.Handle(s.cfg.MetricsPath, s.requireAuth(s.metrics.Handler()))
+		}
 	}
 	handler := logger.Middleware(s.logger, s.cfg.LogRequests)(mux)
 	return handler
@@ -144,7 +150,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := s.injectDefaultWindow(req.Query, decision.AST, req.Context)
+	query := s.injectDefaultWindow(decision.AST, req.Context)
 
 	upstream, err := s.buildUpstreamURL(req, query)
 	if err != nil {
@@ -221,7 +227,7 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path string) (SearchRequest, bool) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return SearchRequest{}, false
@@ -249,7 +255,15 @@ func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path strin
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return SearchRequest{}, false
 	}
-	req.Context = mergeContext(authCtx.ToMap(), req.Context)
+	// Merge auth-derived identity. When authentication is configured, auth values
+	// must override anything supplied in the request body to prevent users from
+	// escalating their plan via context.user.plan. In no-auth mode the request
+	// body is the only source of identity, so it is retained.
+	if _, ok := s.authenticator.(auth.NoOp); ok {
+		req.Context = mergeContext(authCtx.ToMap(), req.Context)
+	} else {
+		req.Context = mergeContext(req.Context, authCtx.ToMap())
+	}
 	return req, true
 }
 
@@ -323,13 +337,13 @@ func (s *Server) resolveQuery(ctx context.Context, queryStr, index string) (quer
 	return nil, "", fmt.Errorf("query syntax not supported for cost estimation: %v", err)
 }
 
-func (s *Server) injectDefaultWindow(queryStr string, ast query.Node, ctx map[string]any) string {
+func (s *Server) injectDefaultWindow(ast query.Node, ctx map[string]any) string {
 	if s.cfg.RequireWindow {
-		return queryStr
+		return astToString(ast)
 	}
 	qr := rules.QueryWindow{DateFields: s.cfg.DateFields}
 	if _, found, _ := qr.FindWindow(ast, time.Now()); found {
-		return queryStr
+		return astToString(ast)
 	}
 	plan := rules.PlanFromContext(ctx)
 	window := s.cfg.PlanWindow(plan)
@@ -337,7 +351,33 @@ func (s *Server) injectDefaultWindow(queryStr string, ast query.Node, ctx map[st
 	if field == "" {
 		field = "@timestamp"
 	}
-	return fmt.Sprintf("(%s) AND %s:[now-%s TO now]", queryStr, field, window)
+
+	// Build the final query from the AST so user-supplied punctuation cannot
+	// break out of the injected date-window clause.
+	injected := query.Boolean{
+		Clauses: []query.Clause{
+			{Occur: query.Must, Term: query.Group{Query: ast}},
+			{
+				Occur: query.Must,
+				Field: field,
+				Term: query.Range{
+					Low:           fmt.Sprintf("now-%s", window),
+					High:          "now",
+					InclusiveLow:  true,
+					InclusiveHigh: true,
+				},
+			},
+		},
+	}
+	return injected.String()
+}
+
+// astToString safely serialises a query AST to a Lucene query string.
+func astToString(n query.Node) string {
+	if n == nil {
+		return ""
+	}
+	return n.String()
 }
 
 func (s *Server) buildRequestBody(req SearchRequest, query string) (io.Reader, error) {
@@ -396,13 +436,23 @@ func (s *Server) buildUpstreamURL(req SearchRequest, query string) (string, erro
 func copyHeaders(dst, src http.Header) {
 	for k, vs := range src {
 		lk := strings.ToLower(k)
-		if lk == "content-length" || lk == "host" {
+		if lk == "content-length" || lk == "host" || lk == "authorization" || lk == "cookie" || lk == "set-cookie" || lk == "proxy-authorization" {
 			continue
 		}
 		for _, v := range vs {
 			dst.Add(k, v)
 		}
 	}
+}
+
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := s.authenticator.Authenticate(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func respondJSON(w http.ResponseWriter, status int, payload any) {

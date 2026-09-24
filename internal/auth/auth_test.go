@@ -19,9 +19,9 @@ func TestNoOp(t *testing.T) {
 }
 
 func TestAPIKey(t *testing.T) {
-	a := APIKey{Keys: map[string]Context{
+	a := NewAPIKey(map[string]Context{
 		"secret-key": {UserID: "user-1", Plan: "pro"},
-	}}
+	})
 
 	req, _ := http.NewRequest(http.MethodPost, "/search", nil)
 	req.Header.Set("Authorization", "ApiKey secret-key")
@@ -35,7 +35,7 @@ func TestAPIKey(t *testing.T) {
 }
 
 func TestAPIKeyInvalid(t *testing.T) {
-	a := APIKey{Keys: map[string]Context{}}
+	a := NewAPIKey(map[string]Context{})
 	req, _ := http.NewRequest(http.MethodPost, "/search", nil)
 	req.Header.Set("Authorization", "ApiKey wrong-key")
 	_, err := a.Authenticate(req)

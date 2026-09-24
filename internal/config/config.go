@@ -79,15 +79,15 @@ func (c Config) BuildValidator() validate.Validator {
 func (c Config) BuildAuthenticator() auth.Authenticator {
 	switch c.Auth.Type {
 	case "apikey":
-		keys := make(map[string]auth.Context, len(c.Auth.APIKey))
+		raw := make(map[string]auth.Context, len(c.Auth.APIKey))
 		for k, v := range c.Auth.APIKey {
-			keys[k] = auth.Context{
+			raw[k] = auth.Context{
 				UserID: v.UserID,
 				Plan:   v.Plan,
 				Extra:  v.Extra,
 			}
 		}
-		return auth.APIKey{Keys: keys}
+		return auth.NewAPIKey(raw)
 	case "jwt":
 		return auth.JWT{
 			Secret:    []byte(c.Auth.JWTSecret),

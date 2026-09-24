@@ -51,9 +51,18 @@ func main() {
 		defer cancel()
 	}
 
+	writeTimeout := 60 * time.Second
+	if d, err := time.ParseDuration(cfg.ProxyTimeout); err == nil {
+		writeTimeout = d + 5*time.Second
+	}
+
 	srv := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: server.Handler(),
+		Addr:           cfg.ListenAddr,
+		Handler:        server.Handler(),
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   writeTimeout,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	errCh := make(chan error, 1)

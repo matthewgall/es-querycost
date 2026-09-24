@@ -2,6 +2,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -52,10 +54,24 @@ func (NoOp) Authenticate(*http.Request) (Context, error) {
 	return Context{Plan: "default"}, nil
 }
 
-// APIKey maps API keys to contexts.
+// APIKey maps hashed API key values to contexts.
 type APIKey struct {
-	// Keys maps an API key value to the context it represents.
+	// Keys maps a SHA-256 hash of an API key to the context it represents.
 	Keys map[string]Context
+}
+
+// NewAPIKey creates an APIKey from a map of plaintext key to context.
+func NewAPIKey(raw map[string]Context) APIKey {
+	keys := make(map[string]Context, len(raw))
+	for k, v := range raw {
+		keys[hashKey(k)] = v
+	}
+	return APIKey{Keys: keys}
+}
+
+func hashKey(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:])
 }
 
 // Close is a no-op.
@@ -66,7 +82,7 @@ func (a APIKey) Authenticate(r *http.Request) (Context, error) {
 	if err != nil {
 		return Context{}, err
 	}
-	ctx, ok := a.Keys[key]
+	ctx, ok := a.Keys[hashKey(key)]
 	if !ok {
 		return Context{}, fmt.Errorf("invalid api key")
 	}

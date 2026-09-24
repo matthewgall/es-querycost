@@ -10,7 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
+
+const maxValidateResponseBytes = 1 << 20 // 1 MiB
 
 // Result is the outcome of validating a query.
 type Result struct {
@@ -41,7 +44,7 @@ type ES struct {
 func NewES(baseURL string) *ES {
 	return &ES{
 		BaseURL: strings.TrimRight(baseURL, "/"),
-		Client:  &http.Client{},
+		Client:  &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -79,7 +82,7 @@ func (v *ES) Validate(ctx context.Context, index, query string) (Result, error) 
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxValidateResponseBytes))
 	if err != nil {
 		return Result{}, fmt.Errorf("read response: %w", err)
 	}

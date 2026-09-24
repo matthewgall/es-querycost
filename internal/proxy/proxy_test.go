@@ -338,6 +338,35 @@ func TestMetricsRecordedOnDenial(t *testing.T) {
 	}
 }
 
+func TestMetricsRequiresAuthWhenConfigured(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.MetricsEnabled = true
+	cfg.MetricsPath = "/metrics"
+	cfg.Auth.Type = "apikey"
+	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
+		"secret": {UserID: "u1", Plan: "free"},
+	}
+	m := metrics.New()
+	server, _ := NewServerWithValidator(cfg, validate.NoOp{}, m, nil)
+
+	// Without credentials metrics should be unavailable.
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for unauthenticated metrics, got %d", w.Code)
+	}
+
+	// With valid credentials metrics should be served.
+	req2 := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req2.Header.Set("Authorization", "ApiKey secret")
+	w2 := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Errorf("expected 200 for authenticated metrics, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
 func TestProxyAPIKeyAuth(t *testing.T) {
 	mock := startMockES(t, "/my-index/_search")
 	defer mock.Close()
@@ -422,6 +451,42 @@ func TestProxyJWTAuth(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProxyAuthContextOverridesRequestPlan(t *testing.T) {
+	mock := startMockES(t, "/my-index/_search")
+	defer mock.Close()
+
+	cfg := config.Defaults()
+	cfg.ElasticsearchURL = mock.URL
+	cfg.Auth.Type = "apikey"
+	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
+		"secret": {UserID: "u1", Plan: "free"},
+	}
+	server, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	// A leading-wildcard query is denied for "free" but would be allowed for
+	// "enterprise". The request body tries to claim "enterprise", but the
+	// auth-derived "free" plan must win.
+	payload := SearchRequest{
+		Query: `*lidl* AND @timestamp:[now-14d TO now]`,
+		Index: "my-index",
+		Context: map[string]any{
+			"user": map[string]any{"plan": "enterprise"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	req.Header.Set("Authorization", "ApiKey secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Errorf("expected 402 because auth plan 'free' overrides request plan 'enterprise', got %d: %s", w.Code, w.Body.String())
 	}
 }
 

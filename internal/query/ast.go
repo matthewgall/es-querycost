@@ -1,9 +1,16 @@
 // Package query parses Lucene-style query strings into an AST.
 package query
 
+import (
+	"strconv"
+	"strings"
+)
+
 // Node is the interface implemented by all nodes in the Lucene query AST.
 type Node interface {
 	isNode()
+	// String returns a Lucene query-string representation of the node.
+	String() string
 }
 
 // Boolean groups clauses with an implicit or explicit boolean operator.
@@ -12,6 +19,14 @@ type Boolean struct {
 }
 
 func (Boolean) isNode() {}
+
+func (b Boolean) String() string {
+	parts := make([]string, 0, len(b.Clauses))
+	for _, c := range b.Clauses {
+		parts = append(parts, c.String())
+	}
+	return strings.Join(parts, " ")
+}
 
 // Clause represents a single clause in a boolean query.
 type Clause struct {
@@ -25,6 +40,24 @@ type Clause struct {
 }
 
 func (Clause) isNode() {}
+
+func (c Clause) String() string {
+	var prefix string
+	switch c.Occur {
+	case Must:
+		prefix = "+"
+	case MustNot:
+		prefix = "-"
+	}
+	var term string
+	if c.Term != nil {
+		term = c.Term.String()
+	}
+	if c.Field != "" {
+		return prefix + c.Field + ":" + term
+	}
+	return prefix + term
+}
 
 // Occur describes clause occurrence requirements.
 type Occur int
@@ -49,12 +82,16 @@ type Term struct {
 
 func (Term) isNode() {}
 
+func (t Term) String() string { return t.Value }
+
 // Phrase is a quoted phrase.
 type Phrase struct {
 	Value string
 }
 
 func (Phrase) isNode() {}
+
+func (p Phrase) String() string { return strconv.Quote(p.Value) }
 
 // Range is a range query such as [1 TO 10] or {a TO z}.
 type Range struct {
@@ -66,9 +103,36 @@ type Range struct {
 
 func (Range) isNode() {}
 
+func (r Range) String() string {
+	low := r.Low
+	if low == "" {
+		low = "*"
+	}
+	high := r.High
+	if high == "" {
+		high = "*"
+	}
+	open := "["
+	if !r.InclusiveLow {
+		open = "{"
+	}
+	close := "]"
+	if !r.InclusiveHigh {
+		close = "}"
+	}
+	return open + low + " TO " + high + close
+}
+
 // Group is a parenthesised sub-query.
 type Group struct {
 	Query Node
 }
 
 func (Group) isNode() {}
+
+func (g Group) String() string {
+	if g.Query == nil {
+		return "()"
+	}
+	return "(" + g.Query.String() + ")"
+}
