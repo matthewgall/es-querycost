@@ -147,6 +147,68 @@ func TestProxyForwardsSourceBody(t *testing.T) {
 	}
 }
 
+func TestProxyRejectsSourceQuery(t *testing.T) {
+	mock := startMockES(t, "/my-index/_search")
+	defer mock.Close()
+
+	cfg := config.Defaults()
+	cfg.ElasticsearchURL = mock.URL
+	server, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	payload := SearchRequest{
+		Query: `asn:AS13335`,
+		Index: "my-index",
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+		Source: map[string]any{
+			"query": map[string]any{"match_all": map[string]any{}},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for user-supplied source.query, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProxyRejectsUnknownSourceField(t *testing.T) {
+	mock := startMockES(t, "/my-index/_search")
+	defer mock.Close()
+
+	cfg := config.Defaults()
+	cfg.ElasticsearchURL = mock.URL
+	server, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	payload := SearchRequest{
+		Query: `asn:AS13335`,
+		Index: "my-index",
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+		Source: map[string]any{
+			"aggs": map[string]any{"by_day": map[string]any{"date_histogram": map[string]any{"field": "@timestamp", "calendar_interval": "1d"}}},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for unknown source field, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestProxyRejectsInvalidMethod(t *testing.T) {
 	cfg := config.Defaults()
 	server, _ := NewServer(cfg, nil)

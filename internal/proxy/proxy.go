@@ -152,14 +152,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var outBody io.Reader
-	if req.Source != nil {
-		src := req.Source
-		if _, ok := src["query"]; !ok {
-			src["query"] = map[string]any{"query_string": map[string]any{"query": query}}
-		}
-		b, _ := json.Marshal(src)
-		outBody = bytes.NewReader(b)
+	outBody, err := s.buildRequestBody(req, query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstream, outBody)
@@ -342,6 +338,39 @@ func (s *Server) injectDefaultWindow(queryStr string, ast query.Node, ctx map[st
 		field = "@timestamp"
 	}
 	return fmt.Sprintf("(%s) AND %s:[now-%s TO now]", queryStr, field, window)
+}
+
+func (s *Server) buildRequestBody(req SearchRequest, query string) (io.Reader, error) {
+	if req.Source == nil {
+		return nil, nil
+	}
+	// Copy so we do not mutate the parsed request body.
+	src := make(map[string]any, len(req.Source)+1)
+	for k, v := range req.Source {
+		if k == "query" {
+			return nil, fmt.Errorf("source.query is not allowed; use the top-level query field")
+		}
+		if !allowedSourceFields[k] {
+			return nil, fmt.Errorf("source field %q is not allowed", k)
+		}
+		src[k] = v
+	}
+	src["query"] = map[string]any{"query_string": map[string]any{"query": query}}
+	b, err := json.Marshal(src)
+	if err != nil {
+		return nil, fmt.Errorf("marshal source body: %w", err)
+	}
+	return bytes.NewReader(b), nil
+}
+
+var allowedSourceFields = map[string]bool{
+	"size":             true,
+	"from":             true,
+	"sort":             true,
+	"_source":          true,
+	"fields":           true,
+	"track_total_hits": true,
+	"collapse":         true,
 }
 
 func (s *Server) buildUpstreamURL(req SearchRequest, query string) (string, error) {
