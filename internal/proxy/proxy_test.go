@@ -500,6 +500,83 @@ func (f *fakeValidator) Validate(context.Context, string, string) (validate.Resu
 	return validate.Result{Valid: f.valid, Explanation: f.explanation, Error: f.errMsg}, nil
 }
 
+func TestProxyUpstreamBasicAuth(t *testing.T) {
+	var gotUser, gotPass string
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser, gotPass, _ = r.BasicAuth()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"hits":{"total":{"value":0},"hits":[]}}`))
+	}))
+	defer mock.Close()
+
+	cfg := config.Defaults()
+	cfg.ElasticsearchURL = mock.URL
+	cfg.ElasticsearchUsername = "es-user"
+	cfg.ElasticsearchPassword = "es-pass"
+	server, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	payload := SearchRequest{
+		Query: `asn:AS13335 AND @timestamp:[now-7d TO now]`,
+		Index: "my-index",
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotUser != "es-user" || gotPass != "es-pass" {
+		t.Errorf("expected ES basic auth es-user:es-pass, got %s:%s", gotUser, gotPass)
+	}
+}
+
+func TestProxyStripsClientAuthorization(t *testing.T) {
+	var gotAuth string
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"hits":{"total":{"value":0},"hits":[]}}`))
+	}))
+	defer mock.Close()
+
+	cfg := config.Defaults()
+	cfg.ElasticsearchURL = mock.URL
+	server, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	payload := SearchRequest{
+		Query: `asn:AS13335 AND @timestamp:[now-7d TO now]`,
+		Index: "my-index",
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.HasPrefix(gotAuth, "Basic ") {
+		t.Errorf("client Authorization header was forwarded to upstream: %s", gotAuth)
+	}
+}
+
 func TestProxyTimeout(t *testing.T) {
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)

@@ -202,6 +202,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyHeaders(outReq.Header, r.Header)
+	if s.cfg.ElasticsearchUsername != "" {
+		outReq.SetBasicAuth(s.cfg.ElasticsearchUsername, s.cfg.ElasticsearchPassword)
+	}
 	if outBody != nil {
 		outReq.Header.Set("Content-Type", "application/json")
 	}

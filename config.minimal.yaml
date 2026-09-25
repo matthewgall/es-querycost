@@ -14,6 +14,11 @@ elasticsearch_insecure_skip_verify: true
 # certificate. This is the safer option for self-signed certs.
 # elasticsearch_ca_cert: "/path/to/ca.crt"
 
+# If your upstream Elasticsearch requires HTTP basic authentication, uncomment
+# and set these. The client's Authorization header is never forwarded to ES.
+# elasticsearch_username: "elastic"
+# elasticsearch_password: "changeme"
+
 # "none" disables authentication. For a quick authenticated test, change
 # type to "apikey" and uncomment the api_keys block below.
 auth:

@@ -39,12 +39,14 @@ func (NoOp) Validate(context.Context, string, string) (Result, error) {
 
 // ES uses Elasticsearch's _validate/query API to validate a query.
 type ES struct {
-	BaseURL string
-	Client  *http.Client
+	BaseURL  string
+	Client   *http.Client
+	Username string
+	Password string
 }
 
 // NewES creates an Elasticsearch-backed validator.
-func NewES(baseURL string, insecureSkipVerify bool, caCert string) (*ES, error) {
+func NewES(baseURL string, insecureSkipVerify bool, caCert, username, password string) (*ES, error) {
 	transport := &http.Transport{}
 	if insecureSkipVerify || caCert != "" {
 		tlsConfig := &tls.Config{InsecureSkipVerify: insecureSkipVerify}
@@ -62,8 +64,10 @@ func NewES(baseURL string, insecureSkipVerify bool, caCert string) (*ES, error) 
 		transport.TLSClientConfig = tlsConfig
 	}
 	return &ES{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		Client:  &http.Client{Timeout: 10 * time.Second, Transport: transport},
+		BaseURL:  strings.TrimRight(baseURL, "/"),
+		Client:   &http.Client{Timeout: 10 * time.Second, Transport: transport},
+		Username: username,
+		Password: password,
 	}, nil
 }
 
@@ -94,6 +98,9 @@ func (v *ES) Validate(ctx context.Context, index, query string) (Result, error) 
 		return Result{}, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if v.Username != "" {
+		req.SetBasicAuth(v.Username, v.Password)
+	}
 
 	resp, err := v.Client.Do(req)
 	if err != nil {

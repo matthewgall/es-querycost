@@ -34,7 +34,7 @@ func TestESValid(t *testing.T) {
 	}))
 	defer server.Close()
 
-	v, err := NewES(server.URL, false, "")
+	v, err := NewES(server.URL, false, "", "", "")
 	if err != nil {
 		t.Fatalf("NewES: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestESInvalid(t *testing.T) {
 	}))
 	defer server.Close()
 
-	v, err := NewES(server.URL, false, "")
+	v, err := NewES(server.URL, false, "", "", "")
 	if err != nil {
 		t.Fatalf("NewES: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestESSkipVerify(t *testing.T) {
 	}))
 	defer server.Close()
 
-	v, err := NewES(server.URL, true, "")
+	v, err := NewES(server.URL, true, "", "", "")
 	if err != nil {
 		t.Fatalf("NewES: %v", err)
 	}
@@ -97,6 +97,33 @@ func TestESSkipVerify(t *testing.T) {
 	}
 }
 
+func TestESBasicAuth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "es-user" || pass != "es-pass" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`unauthorized`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"valid": true, "explanations": []}`))
+	}))
+	defer server.Close()
+
+	v, err := NewES(server.URL, false, "", "es-user", "es-pass")
+	if err != nil {
+		t.Fatalf("NewES: %v", err)
+	}
+	r, err := v.Validate(context.Background(), "", "asn:AS13335")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !r.Valid {
+		t.Errorf("expected valid, got: %s", r.Error)
+	}
+}
+
 func TestESHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -104,7 +131,7 @@ func TestESHTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	v, err := NewES(server.URL, false, "")
+	v, err := NewES(server.URL, false, "", "", "")
 	if err != nil {
 		t.Fatalf("NewES: %v", err)
 	}
