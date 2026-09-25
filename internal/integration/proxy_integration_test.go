@@ -39,6 +39,9 @@ func esConfig(t *testing.T) config.Config {
 		cfg.Elasticsearch.Username = user
 		cfg.Elasticsearch.Password = pass
 	}
+	if os.Getenv("ESQUERY_TEST_ELASTICSEARCH_INSECURE_SKIP_VERIFY") == "true" {
+		cfg.Elasticsearch.InsecureSkipVerify = true
+	}
 	return cfg
 }
 
