@@ -97,6 +97,26 @@ func TestLoadWithFlagOverridesEnv(t *testing.T) {
 	}
 }
 
+func TestLoadWithElasticsearchEnv(t *testing.T) {
+	t.Setenv("ESQUERY_ELASTICSEARCH_URL", "http://es-env.example.com:9200")
+	t.Setenv("ESQUERY_ELASTICSEARCH_USERNAME", "elastic")
+	t.Setenv("ESQUERY_ELASTICSEARCH_PASSWORD", "env-pass")
+
+	cfg, _, err := loadWith([]string{})
+	if err != nil {
+		t.Fatalf("loadWith: %v", err)
+	}
+	if cfg.Elasticsearch.URL != "http://es-env.example.com:9200" {
+		t.Errorf("es url: got %s", cfg.Elasticsearch.URL)
+	}
+	if cfg.Elasticsearch.Username != "elastic" {
+		t.Errorf("es username: got %s", cfg.Elasticsearch.Username)
+	}
+	if cfg.Elasticsearch.Password != "env-pass" {
+		t.Errorf("es password: got %s", cfg.Elasticsearch.Password)
+	}
+}
+
 func TestEngineFromConfig(t *testing.T) {
 	cfg := Defaults()
 	engine := cfg.BuildEngine()

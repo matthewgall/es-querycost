@@ -216,6 +216,10 @@ func loadWith(args []string) (Config, string, error) {
 	defaults := map[string]any{
 		"listen_addr":        cfg.ListenAddr,
 		"elasticsearch.url":  cfg.Elasticsearch.URL,
+		"elasticsearch.insecure_skip_verify": cfg.Elasticsearch.InsecureSkipVerify,
+		"elasticsearch.ca_cert":              cfg.Elasticsearch.CACert,
+		"elasticsearch.username":             cfg.Elasticsearch.Username,
+		"elasticsearch.password":             cfg.Elasticsearch.Password,
 		"date_field":         cfg.DateField,
 		"date_fields":        cfg.DateFields,
 		"require_window":     cfg.RequireWindow,
@@ -281,6 +285,10 @@ func loadFromReader(r *strings.Reader) (Config, error) {
 	defaults := map[string]any{
 		"listen_addr":        cfg.ListenAddr,
 		"elasticsearch.url":  cfg.Elasticsearch.URL,
+		"elasticsearch.insecure_skip_verify": cfg.Elasticsearch.InsecureSkipVerify,
+		"elasticsearch.ca_cert":              cfg.Elasticsearch.CACert,
+		"elasticsearch.username":             cfg.Elasticsearch.Username,
+		"elasticsearch.password":             cfg.Elasticsearch.Password,
 		"date_field":         cfg.DateField,
 		"date_fields":        cfg.DateFields,
 		"require_window":     cfg.RequireWindow,

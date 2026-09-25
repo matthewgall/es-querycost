@@ -27,6 +27,21 @@ func esURL(t *testing.T) string {
 	return "http://localhost:9200"
 }
 
+func esAuth() (string, string) {
+	return os.Getenv("ESQUERY_TEST_ELASTICSEARCH_USERNAME"), os.Getenv("ESQUERY_TEST_ELASTICSEARCH_PASSWORD")
+}
+
+func esConfig(t *testing.T) config.Config {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Elasticsearch.URL = esURL(t)
+	if user, pass := esAuth(); user != "" {
+		cfg.Elasticsearch.Username = user
+		cfg.Elasticsearch.Password = pass
+	}
+	return cfg
+}
+
 func skipIfESUnreachable(t *testing.T) {
 	t.Helper()
 	if os.Getenv("ESQUERY_TEST_ELASTICSEARCH_URL") == "" && os.Getenv("CI") != "" {
@@ -35,6 +50,9 @@ func skipIfESUnreachable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, esURL(t), nil)
+	if user, pass := esAuth(); user != "" {
+		req.SetBasicAuth(user, pass)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Skipf("elasticsearch unreachable: %v", err)
@@ -60,6 +78,9 @@ func ensureIndex(t *testing.T) string {
 		}
 	}`))
 	req.Header.Set("Content-Type", "application/json")
+	if user, pass := esAuth(); user != "" {
+		req.SetBasicAuth(user, pass)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("create index: %v", err)
@@ -77,8 +98,7 @@ func TestProxyAgainstElasticsearch(t *testing.T) {
 	skipIfESUnreachable(t)
 	index := ensureIndex(t)
 
-	cfg := config.Defaults()
-	cfg.ElasticsearchURL = esURL(t)
+	cfg := esConfig(t)
 	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
 	if err != nil {
 		t.Fatalf("create server: %v", err)
@@ -108,8 +128,7 @@ func TestProxyDeniesExpensiveQueryAgainstElasticsearch(t *testing.T) {
 	skipIfESUnreachable(t)
 	index := ensureIndex(t)
 
-	cfg := config.Defaults()
-	cfg.ElasticsearchURL = esURL(t)
+	cfg := esConfig(t)
 	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
 	if err != nil {
 		t.Fatalf("create server: %v", err)
