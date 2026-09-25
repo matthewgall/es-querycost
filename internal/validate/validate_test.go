@@ -34,7 +34,10 @@ func TestESValid(t *testing.T) {
 	}))
 	defer server.Close()
 
-	v := NewES(server.URL)
+	v, err := NewES(server.URL, false, "")
+	if err != nil {
+		t.Fatalf("NewES: %v", err)
+	}
 	r, err := v.Validate(context.Background(), "my-index", "asn:AS13335")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -60,13 +63,37 @@ func TestESInvalid(t *testing.T) {
 	}))
 	defer server.Close()
 
-	v := NewES(server.URL)
+	v, err := NewES(server.URL, false, "")
+	if err != nil {
+		t.Fatalf("NewES: %v", err)
+	}
 	r, err := v.Validate(context.Background(), "my-index", "bad[[[")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if r.Valid {
 		t.Error("expected invalid")
+	}
+}
+
+func TestESSkipVerify(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"valid": true, "explanations": []}`))
+	}))
+	defer server.Close()
+
+	v, err := NewES(server.URL, true, "")
+	if err != nil {
+		t.Fatalf("NewES: %v", err)
+	}
+	r, err := v.Validate(context.Background(), "", "asn:AS13335")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !r.Valid {
+		t.Errorf("expected valid with insecure skip verify")
 	}
 }
 
@@ -77,7 +104,10 @@ func TestESHTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	v := NewES(server.URL)
+	v, err := NewES(server.URL, false, "")
+	if err != nil {
+		t.Fatalf("NewES: %v", err)
+	}
 	r, err := v.Validate(context.Background(), "my-index", "asn:AS13335")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

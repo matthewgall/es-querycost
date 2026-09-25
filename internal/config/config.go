@@ -68,11 +68,11 @@ type ContextFromConfig struct {
 }
 
 // BuildValidator creates a validate.Validator from the config.
-func (c Config) BuildValidator() validate.Validator {
+func (c Config) BuildValidator() (validate.Validator, error) {
 	if c.Validator == "elasticsearch" {
-		return validate.NewES(c.ElasticsearchURL)
+		return validate.NewES(c.ElasticsearchURL, c.ElasticsearchInsecureSkipVerify, c.ElasticsearchCACert)
 	}
-	return validate.NoOp{}
+	return validate.NoOp{}, nil
 }
 
 // BuildAuthenticator creates an auth.Authenticator from the config.
@@ -117,8 +117,10 @@ type Config struct {
 	LogLevel          string          `mapstructure:"log_level"`
 	LogFormat         string          `mapstructure:"log_format"`
 	LogRequests       bool            `mapstructure:"log_requests"`
-	ProxyTimeout      string          `mapstructure:"proxy_timeout"`
-	Auth              AuthConfig      `mapstructure:"auth"`
+	ProxyTimeout                  string          `mapstructure:"proxy_timeout"`
+	ElasticsearchInsecureSkipVerify bool            `mapstructure:"elasticsearch_insecure_skip_verify"`
+	ElasticsearchCACert           string          `mapstructure:"elasticsearch_ca_cert"`
+	Auth                          AuthConfig      `mapstructure:"auth"`
 	DateField         string          `mapstructure:"date_field"`
 	DateFields        []string        `mapstructure:"date_fields"`
 	RequireWindow     bool            `mapstructure:"require_window"`

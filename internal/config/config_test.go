@@ -189,8 +189,8 @@ plans:
 
 func TestBuilders(t *testing.T) {
 	cfg := Defaults()
-	if cfg.BuildValidator() == nil {
-		t.Error("BuildValidator returned nil")
+	if v, err := cfg.BuildValidator(); err != nil || v == nil {
+		t.Errorf("BuildValidator returned (%v, %v)", v, err)
 	}
 	if cfg.BuildAuthenticator() == nil {
 		t.Error("BuildAuthenticator returned nil")

@@ -1,0 +1,26 @@
+# Minimal es-querycost configuration for local testing.
+# Copy this file and update elasticsearch_url, then run:
+#   ./es-querycost --config config.minimal.yaml
+
+listen_addr: ":8080"
+elasticsearch_url: "https://localhost:9200"
+
+# Set to true to skip certificate verification. Useful for testing against an
+# Elasticsearch instance with a self-signed certificate. Do not use in
+# production.
+elasticsearch_insecure_skip_verify: true
+
+# Alternatively, provide the path to the CA certificate that signed the ES
+# certificate. This is the safer option for self-signed certs.
+# elasticsearch_ca_cert: "/path/to/ca.crt"
+
+# "none" disables authentication. For a quick authenticated test, change
+# type to "apikey" and uncomment the api_keys block below.
+auth:
+  type: "none"
+
+log_level: "info"
+log_format: "json"
+log_requests: true
+
+proxy_timeout: "30s"

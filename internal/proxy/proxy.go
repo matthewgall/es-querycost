@@ -4,12 +4,15 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -61,7 +64,10 @@ func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	validator := cfg.BuildValidator()
+	validator, err := cfg.BuildValidator()
+	if err != nil {
+		return nil, fmt.Errorf("build validator: %w", err)
+	}
 	var m *metrics.Metrics
 	if cfg.MetricsEnabled {
 		m = metrics.New()
@@ -86,6 +92,10 @@ func newServer(cfg config.Config, validator validate.Validator, authenticator au
 	if err != nil {
 		return nil, err
 	}
+	client, err := newProxyClient(cfg, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("proxy http client: %w", err)
+	}
 	return &Server{
 		cfg:           cfg,
 		model:         cfg.BuildCostModel(),
@@ -94,9 +104,31 @@ func newServer(cfg config.Config, validator validate.Validator, authenticator au
 		authenticator: authenticator,
 		metrics:       m,
 		logger:        logger,
-		client:        &http.Client{Timeout: timeout},
+		client:        client,
 		target:        target,
 	}, nil
+}
+
+func newProxyClient(cfg config.Config, timeout time.Duration) (*http.Client, error) {
+	transport := &http.Transport{}
+	if cfg.ElasticsearchInsecureSkipVerify || cfg.ElasticsearchCACert != "" {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: cfg.ElasticsearchInsecureSkipVerify,
+		}
+		if cfg.ElasticsearchCACert != "" {
+			caCert, err := os.ReadFile(cfg.ElasticsearchCACert)
+			if err != nil {
+				return nil, fmt.Errorf("read elasticsearch_ca_cert: %w", err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caCert) {
+				return nil, fmt.Errorf("failed to parse elasticsearch_ca_cert")
+			}
+			tlsConfig.RootCAs = pool
+		}
+		transport.TLSClientConfig = tlsConfig
+	}
+	return &http.Client{Timeout: timeout, Transport: transport}, nil
 }
 
 // Handler returns the http.Handler for the gate.
@@ -500,12 +532,19 @@ func (s *Server) UpdateConfig(cfg config.Config) error {
 	}
 
 	oldAuth := s.authenticator
+	client, err := newProxyClient(cfg, timeout)
+	if err != nil {
+		return err
+	}
 	s.cfg = cfg
 	s.model = cfg.BuildCostModel()
 	s.engine = cfg.BuildEngine()
-	s.validator = cfg.BuildValidator()
+	s.validator, err = cfg.BuildValidator()
+	if err != nil {
+		return fmt.Errorf("build validator: %w", err)
+	}
 	s.authenticator = cfg.BuildAuthenticator()
-	s.client.Timeout = timeout
+	s.client = client
 	s.target = target
 
 	go func() {

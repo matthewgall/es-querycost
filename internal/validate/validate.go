@@ -4,11 +4,14 @@ package validate
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -41,11 +44,27 @@ type ES struct {
 }
 
 // NewES creates an Elasticsearch-backed validator.
-func NewES(baseURL string) *ES {
+func NewES(baseURL string, insecureSkipVerify bool, caCert string) (*ES, error) {
+	transport := &http.Transport{}
+	if insecureSkipVerify || caCert != "" {
+		tlsConfig := &tls.Config{InsecureSkipVerify: insecureSkipVerify}
+		if caCert != "" {
+			cert, err := os.ReadFile(caCert)
+			if err != nil {
+				return nil, fmt.Errorf("read ca cert: %w", err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(cert) {
+				return nil, fmt.Errorf("parse ca cert")
+			}
+			tlsConfig.RootCAs = pool
+		}
+		transport.TLSClientConfig = tlsConfig
+	}
 	return &ES{
 		BaseURL: strings.TrimRight(baseURL, "/"),
-		Client:  &http.Client{Timeout: 10 * time.Second},
-	}
+		Client:  &http.Client{Timeout: 10 * time.Second, Transport: transport},
+	}, nil
 }
 
 // Validate sends the query to Elasticsearch and returns whether it is valid.
