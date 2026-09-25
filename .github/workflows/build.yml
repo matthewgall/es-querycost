@@ -108,9 +108,10 @@ jobs:
           ES_JAVA_OPTS: "-Xms512m -Xmx512m"
         options: >-
           --health-cmd "curl ${{ matrix.curl_flags }} -u elastic:changeme ${{ matrix.scheme }}://localhost:9200/_cluster/health || exit 1"
+          --health-start-period 30s
           --health-interval 10s
           --health-timeout 5s
-          --health-retries 12
+          --health-retries 24
     env:
       ESQUERY_TEST_ELASTICSEARCH_URL: ${{ matrix.scheme }}://localhost:9200
       ESQUERY_TEST_ELASTICSEARCH_USERNAME: elastic
