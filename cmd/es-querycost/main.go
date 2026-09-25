@@ -27,11 +27,11 @@ func main() {
 	}
 
 	log := logger.New(logger.Config{
-		Level:    cfg.LogLevel,
-		Format:   cfg.LogFormat,
-		Requests: cfg.LogRequests,
+		Level:    cfg.Logging.Level,
+		Format:   cfg.Logging.Format,
+		Requests: cfg.Logging.Requests,
 	}, nil)
-	log.Info("starting es-querycost", "listen_addr", cfg.ListenAddr, "es_url", cfg.ElasticsearchURL)
+	log.Info("starting es-querycost", "listen_addr", cfg.ListenAddr, "es_url", cfg.Elasticsearch.URL)
 
 	server, err := proxy.NewServer(cfg, log)
 	if err != nil {
@@ -67,7 +67,7 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Printf("es-querycost listening on %s, proxying to %s\n", cfg.ListenAddr, cfg.ElasticsearchURL)
+		fmt.Printf("es-querycost listening on %s, proxying to %s\n", cfg.ListenAddr, cfg.Elasticsearch.URL)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}

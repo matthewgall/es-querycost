@@ -84,7 +84,7 @@ func NewServerWithValidator(cfg config.Config, validator validate.Validator, m *
 }
 
 func newServer(cfg config.Config, validator validate.Validator, authenticator auth.Authenticator, m *metrics.Metrics, logger *slog.Logger) (*Server, error) {
-	target, err := url.Parse(cfg.ElasticsearchURL)
+	target, err := url.Parse(cfg.Elasticsearch.URL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid elasticsearch url: %w", err)
 	}
@@ -111,12 +111,12 @@ func newServer(cfg config.Config, validator validate.Validator, authenticator au
 
 func newProxyClient(cfg config.Config, timeout time.Duration) (*http.Client, error) {
 	transport := &http.Transport{}
-	if cfg.ElasticsearchInsecureSkipVerify || cfg.ElasticsearchCACert != "" {
+	if cfg.Elasticsearch.InsecureSkipVerify || cfg.Elasticsearch.CACert != "" {
 		tlsConfig := &tls.Config{
-			InsecureSkipVerify: cfg.ElasticsearchInsecureSkipVerify,
+			InsecureSkipVerify: cfg.Elasticsearch.InsecureSkipVerify,
 		}
-		if cfg.ElasticsearchCACert != "" {
-			caCert, err := os.ReadFile(cfg.ElasticsearchCACert)
+		if cfg.Elasticsearch.CACert != "" {
+			caCert, err := os.ReadFile(cfg.Elasticsearch.CACert)
 			if err != nil {
 				return nil, fmt.Errorf("read elasticsearch_ca_cert: %w", err)
 			}
@@ -144,7 +144,7 @@ func (s *Server) Handler() http.Handler {
 			mux.Handle(s.cfg.MetricsPath, s.requireAuth(s.metrics.Handler()))
 		}
 	}
-	handler := logger.Middleware(s.logger, s.cfg.LogRequests)(mux)
+	handler := logger.Middleware(s.logger, s.cfg.Logging.Requests)(mux)
 	return handler
 }
 
@@ -202,8 +202,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyHeaders(outReq.Header, r.Header)
-	if s.cfg.ElasticsearchUsername != "" {
-		outReq.SetBasicAuth(s.cfg.ElasticsearchUsername, s.cfg.ElasticsearchPassword)
+	if s.cfg.Elasticsearch.Username != "" {
+		outReq.SetBasicAuth(s.cfg.Elasticsearch.Username, s.cfg.Elasticsearch.Password)
 	}
 	if outBody != nil {
 		outReq.Header.Set("Content-Type", "application/json")
@@ -529,7 +529,7 @@ func (s *Server) UpdateConfig(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	target, err := url.Parse(cfg.ElasticsearchURL)
+	target, err := url.Parse(cfg.Elasticsearch.URL)
 	if err != nil {
 		return fmt.Errorf("invalid elasticsearch url: %w", err)
 	}

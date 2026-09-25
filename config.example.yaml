@@ -1,5 +1,11 @@
 listen_addr: ":8080"
-elasticsearch_url: "http://localhost:9200"
+
+elasticsearch:
+  url: "http://localhost:9200"
+  # insecure_skip_verify: true
+  # ca_cert: "/path/to/ca.crt"
+  # username: "elastic"
+  # password: "changeme"
 
 # Validator to use: "local" (default) or "elasticsearch".
 # When set to "elasticsearch", queries are sent to _validate/query before
@@ -26,9 +32,10 @@ auth:
   # jwt_user_claim: "sub"
 
 # Logging configuration.
-log_level: "info"       # debug, info, warn, error
-log_format: "json"      # json or text
-log_requests: true      # access logging
+logging:
+  level: "info"      # debug, info, warn, error
+  format: "json"     # json or text
+  requests: true     # access logging
 
 # Field used when injecting a default date window.
 date_field: "@timestamp"

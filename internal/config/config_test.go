@@ -15,8 +15,8 @@ func TestDefaults(t *testing.T) {
 	if cfg.ListenAddr != ":8080" {
 		t.Errorf("unexpected listen addr: %s", cfg.ListenAddr)
 	}
-	if cfg.ElasticsearchURL != "http://localhost:9200" {
-		t.Errorf("unexpected es url: %s", cfg.ElasticsearchURL)
+	if cfg.Elasticsearch.URL != "http://localhost:9200" {
+		t.Errorf("unexpected es url: %s", cfg.Elasticsearch.URL)
 	}
 	if cfg.RequireWindow {
 		t.Error("expected require_window to be false by default")
@@ -32,7 +32,7 @@ func TestEnvExpansionInConfigFile(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "es-querycost.yaml")
-	content := "elasticsearch_url: $TEST_ES_URL\n"
+	content := "elasticsearch:\n  url: $TEST_ES_URL\n"
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestEnvExpansionInConfigFile(t *testing.T) {
 	if err := readConfigWithEnvExpansion(v); err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	if got := v.GetString("elasticsearch_url"); got != "http://es-from-env.example.com" {
+	if got := v.GetString("elasticsearch.url"); got != "http://es-from-env.example.com" {
 		t.Errorf("expected env substitution, got %s", got)
 	}
 }
@@ -52,7 +52,8 @@ func TestLoadWithConfigFile(t *testing.T) {
 	path := filepath.Join(dir, "es-querycost.yaml")
 	content := `
 listen_addr: ":9090"
-elasticsearch_url: "http://custom.example.com:9200"
+elasticsearch:
+  url: "http://custom.example.com:9200"
 require_window: true
 plans:
   free:
@@ -70,8 +71,8 @@ plans:
 	if cfg.ListenAddr != ":9090" {
 		t.Errorf("listen addr: got %s, want :9090", cfg.ListenAddr)
 	}
-	if cfg.ElasticsearchURL != "http://custom.example.com:9200" {
-		t.Errorf("es url: got %s", cfg.ElasticsearchURL)
+	if cfg.Elasticsearch.URL != "http://custom.example.com:9200" {
+		t.Errorf("es url: got %s", cfg.Elasticsearch.URL)
 	}
 	if !cfg.RequireWindow {
 		t.Error("expected require_window true")

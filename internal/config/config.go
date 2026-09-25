@@ -70,7 +70,8 @@ type ContextFromConfig struct {
 // BuildValidator creates a validate.Validator from the config.
 func (c Config) BuildValidator() (validate.Validator, error) {
 	if c.Validator == "elasticsearch" {
-		return validate.NewES(c.ElasticsearchURL, c.ElasticsearchInsecureSkipVerify, c.ElasticsearchCACert, c.ElasticsearchUsername, c.ElasticsearchPassword)
+		es := c.Elasticsearch
+		return validate.NewES(es.URL, es.InsecureSkipVerify, es.CACert, es.Username, es.Password)
 	}
 	return validate.NoOp{}, nil
 }
@@ -107,38 +108,50 @@ func (c Config) BuildAuthenticator() auth.Authenticator {
 	}
 }
 
+// ElasticsearchConfig holds connection details for the upstream cluster.
+type ElasticsearchConfig struct {
+	URL                 string `mapstructure:"url"`
+	InsecureSkipVerify  bool   `mapstructure:"insecure_skip_verify"`
+	CACert              string `mapstructure:"ca_cert"`
+	Username            string `mapstructure:"username"`
+	Password            string `mapstructure:"password"`
+}
+
+// LoggingConfig holds logger settings.
+type LoggingConfig struct {
+	Level    string `mapstructure:"level"`
+	Format   string `mapstructure:"format"`
+	Requests bool   `mapstructure:"requests"`
+}
+
 // Config is the full configuration loaded from files, env and flags.
 type Config struct {
-	ListenAddr        string          `mapstructure:"listen_addr"`
-	ElasticsearchURL  string          `mapstructure:"elasticsearch_url"`
-	Validator         string          `mapstructure:"validator"`
-	MetricsEnabled    bool            `mapstructure:"metrics_enabled"`
-	MetricsPath       string          `mapstructure:"metrics_path"`
-	LogLevel          string          `mapstructure:"log_level"`
-	LogFormat         string          `mapstructure:"log_format"`
-	LogRequests       bool            `mapstructure:"log_requests"`
-	ProxyTimeout                      string          `mapstructure:"proxy_timeout"`
-	ElasticsearchInsecureSkipVerify   bool            `mapstructure:"elasticsearch_insecure_skip_verify"`
-	ElasticsearchCACert               string          `mapstructure:"elasticsearch_ca_cert"`
-	ElasticsearchUsername               string          `mapstructure:"elasticsearch_username"`
-	ElasticsearchPassword               string          `mapstructure:"elasticsearch_password"`
-	Auth                              AuthConfig      `mapstructure:"auth"`
-	DateField         string          `mapstructure:"date_field"`
-	DateFields        []string        `mapstructure:"date_fields"`
-	RequireWindow     bool            `mapstructure:"require_window"`
-	CostModel         CostModel       `mapstructure:"cost_model"`
-	Plans             map[string]Plan `mapstructure:"plans"`
-	ForbiddenFeatures []string        `mapstructure:"forbidden_features"`
+	ListenAddr        string              `mapstructure:"listen_addr"`
+	Elasticsearch     ElasticsearchConfig `mapstructure:"elasticsearch"`
+	Validator         string              `mapstructure:"validator"`
+	MetricsEnabled    bool                `mapstructure:"metrics_enabled"`
+	MetricsPath       string              `mapstructure:"metrics_path"`
+	Logging           LoggingConfig       `mapstructure:"logging"`
+	ProxyTimeout      string              `mapstructure:"proxy_timeout"`
+	Auth              AuthConfig          `mapstructure:"auth"`
+	DateField         string              `mapstructure:"date_field"`
+	DateFields        []string            `mapstructure:"date_fields"`
+	RequireWindow     bool                `mapstructure:"require_window"`
+	CostModel         CostModel           `mapstructure:"cost_model"`
+	Plans             map[string]Plan     `mapstructure:"plans"`
+	ForbiddenFeatures []string            `mapstructure:"forbidden_features"`
 }
 
 // Defaults returns the built-in default configuration.
 func Defaults() Config {
 	return Config{
-		ListenAddr:       ":8080",
-		ElasticsearchURL: "http://localhost:9200",
-		DateField:        "@timestamp",
-		DateFields:       []string{"@timestamp", "timestamp", "date", "created_at"},
-		RequireWindow:    false,
+		ListenAddr: ":8080",
+		Elasticsearch: ElasticsearchConfig{
+			URL: "http://localhost:9200",
+		},
+		DateField:     "@timestamp",
+		DateFields:    []string{"@timestamp", "timestamp", "date", "created_at"},
+		RequireWindow: false,
 		CostModel: CostModel{
 			TermCost:                  1,
 			PhraseCost:                2,
@@ -166,10 +179,12 @@ func Defaults() Config {
 		Validator:         "local",
 		MetricsEnabled:    true,
 		MetricsPath:       "/metrics",
-		LogLevel:          "info",
-		LogFormat:         "json",
-		LogRequests:       true,
-		ProxyTimeout:      "30s",
+		Logging: LoggingConfig{
+			Level:    "info",
+			Format:   "json",
+			Requests: true,
+		},
+		ProxyTimeout: "30s",
 		Auth: AuthConfig{
 			Type: "none",
 		},
@@ -200,7 +215,7 @@ func loadWith(args []string) (Config, string, error) {
 
 	defaults := map[string]any{
 		"listen_addr":        cfg.ListenAddr,
-		"elasticsearch_url":  cfg.ElasticsearchURL,
+		"elasticsearch.url":  cfg.Elasticsearch.URL,
 		"date_field":         cfg.DateField,
 		"date_fields":        cfg.DateFields,
 		"require_window":     cfg.RequireWindow,
@@ -210,9 +225,9 @@ func loadWith(args []string) (Config, string, error) {
 		"validator":          cfg.Validator,
 		"metrics_enabled":    cfg.MetricsEnabled,
 		"metrics_path":       cfg.MetricsPath,
-		"log_level":          cfg.LogLevel,
-		"log_format":         cfg.LogFormat,
-		"log_requests":       cfg.LogRequests,
+		"logging.level":      cfg.Logging.Level,
+		"logging.format":     cfg.Logging.Format,
+		"logging.requests":   cfg.Logging.Requests,
 		"proxy_timeout":      cfg.ProxyTimeout,
 		"auth":               cfg.Auth,
 	}
@@ -223,7 +238,7 @@ func loadWith(args []string) (Config, string, error) {
 	var configFile string
 	fs.StringVarP(&configFile, "config", "c", "", "path to config file")
 	fs.String("listen-addr", cfg.ListenAddr, "listen address")
-	fs.String("elasticsearch-url", cfg.ElasticsearchURL, "elasticsearch base url")
+	fs.String("elasticsearch-url", cfg.Elasticsearch.URL, "elasticsearch base url")
 	if err := fs.Parse(args); err != nil {
 		return cfg, "", fmt.Errorf("parse flags: %w", err)
 	}
@@ -231,7 +246,7 @@ func loadWith(args []string) (Config, string, error) {
 	if err := v.BindPFlag("listen_addr", fs.Lookup("listen-addr")); err != nil {
 		return cfg, "", fmt.Errorf("bind listen-addr flag: %w", err)
 	}
-	if err := v.BindPFlag("elasticsearch_url", fs.Lookup("elasticsearch-url")); err != nil {
+	if err := v.BindPFlag("elasticsearch.url", fs.Lookup("elasticsearch-url")); err != nil {
 		return cfg, "", fmt.Errorf("bind elasticsearch-url flag: %w", err)
 	}
 
@@ -265,7 +280,7 @@ func loadFromReader(r *strings.Reader) (Config, error) {
 
 	defaults := map[string]any{
 		"listen_addr":        cfg.ListenAddr,
-		"elasticsearch_url":  cfg.ElasticsearchURL,
+		"elasticsearch.url":  cfg.Elasticsearch.URL,
 		"date_field":         cfg.DateField,
 		"date_fields":        cfg.DateFields,
 		"require_window":     cfg.RequireWindow,
@@ -275,9 +290,9 @@ func loadFromReader(r *strings.Reader) (Config, error) {
 		"validator":          cfg.Validator,
 		"metrics_enabled":    cfg.MetricsEnabled,
 		"metrics_path":       cfg.MetricsPath,
-		"log_level":          cfg.LogLevel,
-		"log_format":         cfg.LogFormat,
-		"log_requests":       cfg.LogRequests,
+		"logging.level":      cfg.Logging.Level,
+		"logging.format":     cfg.Logging.Format,
+		"logging.requests":   cfg.Logging.Requests,
 		"proxy_timeout":      cfg.ProxyTimeout,
 		"auth":               cfg.Auth,
 	}

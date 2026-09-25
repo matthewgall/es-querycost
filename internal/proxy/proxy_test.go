@@ -33,7 +33,7 @@ func startMockES(t *testing.T, expectedPath string) *httptest.Server {
 
 func TestProxyRejectsExpensiveQuery(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = "http://unused.example.com"
+	cfg.Elasticsearch.URL = "http://unused.example.com"
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -61,7 +61,7 @@ func TestProxyForwardsAllowedQuery(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -93,7 +93,7 @@ func TestProxyInjectsDefaultDateWindow(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -121,7 +121,7 @@ func TestProxyForwardsSourceBody(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -152,7 +152,7 @@ func TestProxyRejectsSourceQuery(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -183,7 +183,7 @@ func TestProxyRejectsUnknownSourceField(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -247,7 +247,7 @@ func TestHealthz(t *testing.T) {
 func TestProxyRejectsInvalidQueryViaES(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Validator = "elasticsearch"
-	cfg.ElasticsearchURL = "http://unused.example.com"
+	cfg.Elasticsearch.URL = "http://unused.example.com"
 	validator := &fakeValidator{valid: false, errMsg: "parse_exception: cannot parse"}
 	server, err := NewServerWithValidator(cfg, validator, nil, nil)
 	if err != nil {
@@ -270,7 +270,7 @@ func TestProxyFallbackToExplanation(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	validator := &fakeValidator{
 		valid:       true,
 		explanation: "+asn:AS13335",
@@ -372,7 +372,7 @@ func TestProxyAPIKeyAuth(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	cfg.Auth.Type = "apikey"
 	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
 		"secret": {UserID: "u1", Plan: "free"},
@@ -425,7 +425,7 @@ func TestProxyJWTAuth(t *testing.T) {
 
 	secret := []byte("jwt-secret")
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	cfg.Auth.Type = "jwt"
 	cfg.Auth.JWTSecret = string(secret)
 	server, err := NewServer(cfg, nil)
@@ -459,7 +459,7 @@ func TestProxyAuthContextOverridesRequestPlan(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	cfg.Auth.Type = "apikey"
 	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
 		"secret": {UserID: "u1", Plan: "free"},
@@ -511,9 +511,9 @@ func TestProxyUpstreamBasicAuth(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
-	cfg.ElasticsearchUsername = "es-user"
-	cfg.ElasticsearchPassword = "es-pass"
+	cfg.Elasticsearch.URL = mock.URL
+	cfg.Elasticsearch.Username = "es-user"
+	cfg.Elasticsearch.Password = "es-pass"
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -550,7 +550,7 @@ func TestProxyStripsClientAuthorization(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -585,7 +585,7 @@ func TestProxyTimeout(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	cfg.ProxyTimeout = "1ms"
 	server, err := NewServer(cfg, nil)
 	if err != nil {
@@ -614,7 +614,7 @@ func TestProxyCustomPlan(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	cfg.Plans["startup"] = config.Plan{CostLimit: 15, Window: "7d"}
 	server, err := NewServer(cfg, nil)
 	if err != nil {
@@ -643,7 +643,7 @@ func TestProxyValidateEndpoint(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -720,7 +720,7 @@ func TestServerUpdateConfig(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Defaults()
-	cfg.ElasticsearchURL = mock.URL
+	cfg.Elasticsearch.URL = mock.URL
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
