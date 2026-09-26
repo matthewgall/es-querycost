@@ -70,7 +70,7 @@ type ContextFromConfig struct {
 
 // BuildValidator creates a validate.Validator from the config.
 func (c Config) BuildValidator() (validate.Validator, error) {
-	if c.Validator == "elasticsearch" {
+	if c.Query.Validator == "elasticsearch" {
 		es := c.Elasticsearch
 		return validate.NewES(es.URL, es.InsecureSkipVerify, es.CACert, es.Username, es.Password)
 	}
@@ -125,70 +125,99 @@ type LoggingConfig struct {
 	Requests bool   `mapstructure:"requests"`
 }
 
+// ServerConfig controls how the HTTP server listens and proxies.
+type ServerConfig struct {
+	ListenAddr     string   `mapstructure:"listen_addr"`
+	ProxyTimeout   string   `mapstructure:"proxy_timeout"`
+	TrustedProxies []string `mapstructure:"trusted_proxies"`
+}
+
+// MetricsConfig controls the Prometheus metrics endpoint.
+type MetricsConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Path    string `mapstructure:"path"`
+}
+
+// QueryConfig controls query parsing, validation, and date-window behaviour.
+type QueryConfig struct {
+	Validator         string   `mapstructure:"validator"`
+	DateField         string   `mapstructure:"date_field"`
+	DateFields        []string `mapstructure:"date_fields"`
+	RequireWindow     bool     `mapstructure:"require_window"`
+	ForbiddenFeatures []string `mapstructure:"forbidden_features"`
+}
+
+// LimitsConfig holds plan/quotas and the cost model.
+type LimitsConfig struct {
+	Plans     map[string]Plan `mapstructure:"plans"`
+	CostModel CostModel       `mapstructure:"cost_model"`
+}
+
 // Config is the full configuration loaded from files, env and flags.
 type Config struct {
-	ListenAddr        string              `mapstructure:"listen_addr"`
-	TrustedProxies    []string            `mapstructure:"trusted_proxies"`
-	Elasticsearch     ElasticsearchConfig `mapstructure:"elasticsearch"`
-	Validator         string              `mapstructure:"validator"`
-	MetricsEnabled    bool                `mapstructure:"metrics_enabled"`
-	MetricsPath       string              `mapstructure:"metrics_path"`
-	Logging           LoggingConfig       `mapstructure:"logging"`
-	ProxyTimeout      string              `mapstructure:"proxy_timeout"`
-	Auth              AuthConfig          `mapstructure:"auth"`
-	DateField         string              `mapstructure:"date_field"`
-	DateFields        []string            `mapstructure:"date_fields"`
-	RequireWindow     bool                `mapstructure:"require_window"`
-	CostModel         CostModel           `mapstructure:"cost_model"`
-	Plans             map[string]Plan     `mapstructure:"plans"`
-	ForbiddenFeatures []string            `mapstructure:"forbidden_features"`
+	Server        ServerConfig        `mapstructure:"server"`
+	Elasticsearch ElasticsearchConfig `mapstructure:"elasticsearch"`
+	Metrics       MetricsConfig       `mapstructure:"metrics"`
+	Logging       LoggingConfig       `mapstructure:"logging"`
+	Auth          AuthConfig          `mapstructure:"auth"`
+	Query         QueryConfig         `mapstructure:"query"`
+	Limits        LimitsConfig        `mapstructure:"limits"`
 }
 
 // Defaults returns the built-in default configuration.
 func Defaults() Config {
 	return Config{
-		ListenAddr: ":8080",
+		Server: ServerConfig{
+			ListenAddr:     ":8080",
+			ProxyTimeout:   "30s",
+			TrustedProxies: nil,
+		},
 		Elasticsearch: ElasticsearchConfig{
 			URL: "http://localhost:9200",
 		},
-		DateField:     "@timestamp",
-		DateFields:    []string{"@timestamp", "timestamp", "date", "created_at"},
-		RequireWindow: false,
-		CostModel: CostModel{
-			TermCost:                  1,
-			PhraseCost:                2,
-			WildcardMultiplier:        10,
-			LeadingWildcardCost:       50,
-			MatchAllCost:              100,
-			RangeCost:                 5,
-			OpenRangeCost:             50,
-			OrClauseCost:              3,
-			DepthCost:                 1,
-			KeywordWildcardMultiplier: 3,
-			FieldWeights: map[string]float64{
-				"asn": 0.5,
-			},
-			DefaultFieldWeight:        1,
-			DefaultSearchFieldPenalty: 2,
+		Metrics: MetricsConfig{
+			Enabled: true,
+			Path:    "/metrics",
 		},
-		Plans: map[string]Plan{
-			"free":       {CostLimit: 50, Window: "14d"},
-			"starter":    {CostLimit: 200, Window: "30d"},
-			"pro":        {CostLimit: 1000, Window: "60d"},
-			"enterprise": {CostLimit: 10000, Window: "365d"},
-		},
-		ForbiddenFeatures: []string{"match_all", "open_range"},
-		Validator:         "local",
-		MetricsEnabled:    true,
-		MetricsPath:       "/metrics",
 		Logging: LoggingConfig{
 			Level:    "info",
 			Format:   "json",
 			Requests: true,
 		},
-		ProxyTimeout: "30s",
 		Auth: AuthConfig{
 			Type: "none",
+		},
+		Query: QueryConfig{
+			Validator:         "local",
+			DateField:         "@timestamp",
+			DateFields:        []string{"@timestamp", "timestamp", "date", "created_at"},
+			RequireWindow:     false,
+			ForbiddenFeatures: []string{"match_all", "open_range"},
+		},
+		Limits: LimitsConfig{
+			Plans: map[string]Plan{
+				"free":       {CostLimit: 50, Window: "14d"},
+				"starter":    {CostLimit: 200, Window: "30d"},
+				"pro":        {CostLimit: 1000, Window: "60d"},
+				"enterprise": {CostLimit: 10000, Window: "365d"},
+			},
+			CostModel: CostModel{
+				TermCost:                  1,
+				PhraseCost:                2,
+				WildcardMultiplier:        10,
+				LeadingWildcardCost:       50,
+				MatchAllCost:              100,
+				RangeCost:                 5,
+				OpenRangeCost:             50,
+				OrClauseCost:              3,
+				DepthCost:                 1,
+				KeywordWildcardMultiplier: 3,
+				FieldWeights: map[string]float64{
+					"asn": 0.5,
+				},
+				DefaultFieldWeight:        1,
+				DefaultSearchFieldPenalty: 2,
+			},
 		},
 	}
 }
@@ -216,27 +245,27 @@ func loadWith(args []string) (Config, string, error) {
 	v.AutomaticEnv()
 
 	defaults := map[string]any{
-		"listen_addr":        cfg.ListenAddr,
-		"trusted_proxies":    cfg.TrustedProxies,
-		"elasticsearch.url":  cfg.Elasticsearch.URL,
+		"server.listen_addr":                 cfg.Server.ListenAddr,
+		"server.proxy_timeout":               cfg.Server.ProxyTimeout,
+		"server.trusted_proxies":             cfg.Server.TrustedProxies,
+		"elasticsearch.url":                  cfg.Elasticsearch.URL,
 		"elasticsearch.insecure_skip_verify": cfg.Elasticsearch.InsecureSkipVerify,
 		"elasticsearch.ca_cert":              cfg.Elasticsearch.CACert,
 		"elasticsearch.username":             cfg.Elasticsearch.Username,
 		"elasticsearch.password":             cfg.Elasticsearch.Password,
-		"date_field":         cfg.DateField,
-		"date_fields":        cfg.DateFields,
-		"require_window":     cfg.RequireWindow,
-		"cost_model":         cfg.CostModel,
-		"plans":              cfg.Plans,
-		"forbidden_features": cfg.ForbiddenFeatures,
-		"validator":          cfg.Validator,
-		"metrics_enabled":    cfg.MetricsEnabled,
-		"metrics_path":       cfg.MetricsPath,
-		"logging.level":      cfg.Logging.Level,
-		"logging.format":     cfg.Logging.Format,
-		"logging.requests":   cfg.Logging.Requests,
-		"proxy_timeout":      cfg.ProxyTimeout,
-		"auth":               cfg.Auth,
+		"metrics.enabled":                    cfg.Metrics.Enabled,
+		"metrics.path":                       cfg.Metrics.Path,
+		"logging.level":                      cfg.Logging.Level,
+		"logging.format":                     cfg.Logging.Format,
+		"logging.requests":                   cfg.Logging.Requests,
+		"query.validator":                    cfg.Query.Validator,
+		"query.date_field":                   cfg.Query.DateField,
+		"query.date_fields":                  cfg.Query.DateFields,
+		"query.require_window":               cfg.Query.RequireWindow,
+		"query.forbidden_features":           cfg.Query.ForbiddenFeatures,
+		"limits.plans":                       cfg.Limits.Plans,
+		"limits.cost_model":                  cfg.Limits.CostModel,
+		"auth":                               cfg.Auth,
 	}
 	for key, val := range defaults {
 		v.SetDefault(key, val)
@@ -244,13 +273,13 @@ func loadWith(args []string) (Config, string, error) {
 
 	var configFile string
 	fs.StringVarP(&configFile, "config", "c", "", "path to config file")
-	fs.String("listen-addr", cfg.ListenAddr, "listen address")
+	fs.String("listen-addr", cfg.Server.ListenAddr, "listen address")
 	fs.String("elasticsearch-url", cfg.Elasticsearch.URL, "elasticsearch base url")
 	if err := fs.Parse(args); err != nil {
 		return cfg, "", fmt.Errorf("parse flags: %w", err)
 	}
 
-	if err := v.BindPFlag("listen_addr", fs.Lookup("listen-addr")); err != nil {
+	if err := v.BindPFlag("server.listen_addr", fs.Lookup("listen-addr")); err != nil {
 		return cfg, "", fmt.Errorf("bind listen-addr flag: %w", err)
 	}
 	if err := v.BindPFlag("elasticsearch.url", fs.Lookup("elasticsearch-url")); err != nil {
@@ -274,7 +303,7 @@ func loadWith(args []string) (Config, string, error) {
 		return cfg, "", fmt.Errorf("unmarshal config: %w", err)
 	}
 
-	if err := validateTrustedProxies(cfg.TrustedProxies); err != nil {
+	if err := validateTrustedProxies(cfg.Server.TrustedProxies); err != nil {
 		return cfg, "", fmt.Errorf("trusted_proxies: %w", err)
 	}
 
@@ -303,27 +332,27 @@ func loadFromReader(r *strings.Reader) (Config, error) {
 	v.AutomaticEnv()
 
 	defaults := map[string]any{
-		"listen_addr":        cfg.ListenAddr,
-		"trusted_proxies":    cfg.TrustedProxies,
-		"elasticsearch.url":  cfg.Elasticsearch.URL,
+		"server.listen_addr":                 cfg.Server.ListenAddr,
+		"server.proxy_timeout":               cfg.Server.ProxyTimeout,
+		"server.trusted_proxies":             cfg.Server.TrustedProxies,
+		"elasticsearch.url":                  cfg.Elasticsearch.URL,
 		"elasticsearch.insecure_skip_verify": cfg.Elasticsearch.InsecureSkipVerify,
 		"elasticsearch.ca_cert":              cfg.Elasticsearch.CACert,
 		"elasticsearch.username":             cfg.Elasticsearch.Username,
 		"elasticsearch.password":             cfg.Elasticsearch.Password,
-		"date_field":         cfg.DateField,
-		"date_fields":        cfg.DateFields,
-		"require_window":     cfg.RequireWindow,
-		"cost_model":         cfg.CostModel,
-		"plans":              cfg.Plans,
-		"forbidden_features": cfg.ForbiddenFeatures,
-		"validator":          cfg.Validator,
-		"metrics_enabled":    cfg.MetricsEnabled,
-		"metrics_path":       cfg.MetricsPath,
-		"logging.level":      cfg.Logging.Level,
-		"logging.format":     cfg.Logging.Format,
-		"logging.requests":   cfg.Logging.Requests,
-		"proxy_timeout":      cfg.ProxyTimeout,
-		"auth":               cfg.Auth,
+		"metrics.enabled":                    cfg.Metrics.Enabled,
+		"metrics.path":                       cfg.Metrics.Path,
+		"logging.level":                      cfg.Logging.Level,
+		"logging.format":                     cfg.Logging.Format,
+		"logging.requests":                   cfg.Logging.Requests,
+		"query.validator":                    cfg.Query.Validator,
+		"query.date_field":                   cfg.Query.DateField,
+		"query.date_fields":                  cfg.Query.DateFields,
+		"query.require_window":               cfg.Query.RequireWindow,
+		"query.forbidden_features":           cfg.Query.ForbiddenFeatures,
+		"limits.plans":                       cfg.Limits.Plans,
+		"limits.cost_model":                  cfg.Limits.CostModel,
+		"auth":                               cfg.Auth,
 	}
 	for k, val := range defaults {
 		v.SetDefault(k, val)
@@ -372,7 +401,7 @@ func readConfigWithEnvExpansion(v *viper.Viper) error {
 
 // BuildCostModel converts the config struct to the runtime cost model.
 func (c Config) BuildCostModel() cost.Model {
-	m := c.CostModel
+	m := c.Limits.CostModel
 	return cost.Model{
 		TermCost:                  m.TermCost,
 		PhraseCost:                m.PhraseCost,
@@ -392,9 +421,9 @@ func (c Config) BuildCostModel() cost.Model {
 
 // BuildEngine builds the rule engine from the loaded configuration.
 func (c Config) BuildEngine() *rules.Engine {
-	windows := make(map[string]time.Duration, len(c.Plans))
-	limits := make(map[string]float64, len(c.Plans))
-	for plan, p := range c.Plans {
+	windows := make(map[string]time.Duration, len(c.Limits.Plans))
+	limits := make(map[string]float64, len(c.Limits.Plans))
+	for plan, p := range c.Limits.Plans {
 		limits[plan] = p.CostLimit
 		if d, ok := datemath.ParseDurationHuman(p.Window); ok {
 			windows[plan] = d
@@ -403,16 +432,16 @@ func (c Config) BuildEngine() *rules.Engine {
 
 	return &rules.Engine{
 		Rules: []rules.Rule{
-			rules.ForbiddenFeature{Forbidden: c.ForbiddenFeatures},
+			rules.ForbiddenFeature{Forbidden: c.Query.ForbiddenFeatures},
 			rules.PlanLimit{
 				Limits:       limits,
 				DefaultLimit: 100,
 			},
 			rules.QueryWindow{
-				DateFields:    c.DateFields,
+				DateFields:    c.Query.DateFields,
 				Windows:       windows,
 				DefaultWindow: 30 * 24 * time.Hour,
-				RequireWindow: c.RequireWindow,
+				RequireWindow: c.Query.RequireWindow,
 			},
 		},
 	}
@@ -420,7 +449,7 @@ func (c Config) BuildEngine() *rules.Engine {
 
 // PlanWindow returns the configured time window string for a plan.
 func (c Config) PlanWindow(plan string) string {
-	if p, ok := c.Plans[plan]; ok && p.Window != "" {
+	if p, ok := c.Limits.Plans[plan]; ok && p.Window != "" {
 		return p.Window
 	}
 	return "30d"

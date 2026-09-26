@@ -31,7 +31,7 @@ func main() {
 		Format:   cfg.Logging.Format,
 		Requests: cfg.Logging.Requests,
 	}, nil)
-	log.Info("starting es-querycost", "listen_addr", cfg.ListenAddr, "es_url", cfg.Elasticsearch.URL)
+	log.Info("starting es-querycost", "listen_addr", cfg.Server.ListenAddr, "es_url", cfg.Elasticsearch.URL)
 
 	server, err := proxy.NewServer(cfg, log)
 	if err != nil {
@@ -52,12 +52,12 @@ func main() {
 	}
 
 	writeTimeout := 60 * time.Second
-	if d, err := time.ParseDuration(cfg.ProxyTimeout); err == nil {
+	if d, err := time.ParseDuration(cfg.Server.ProxyTimeout); err == nil {
 		writeTimeout = d + 5*time.Second
 	}
 
 	srv := &http.Server{
-		Addr:           cfg.ListenAddr,
+		Addr:           cfg.Server.ListenAddr,
 		Handler:        server.Handler(),
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   writeTimeout,
@@ -67,7 +67,7 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Printf("es-querycost listening on %s, proxying to %s\n", cfg.ListenAddr, cfg.Elasticsearch.URL)
+		fmt.Printf("es-querycost listening on %s, proxying to %s\n", cfg.Server.ListenAddr, cfg.Elasticsearch.URL)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}

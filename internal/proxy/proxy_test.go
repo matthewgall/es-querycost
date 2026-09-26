@@ -246,7 +246,7 @@ func TestHealthz(t *testing.T) {
 
 func TestProxyRejectsInvalidQueryViaES(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Validator = "elasticsearch"
+	cfg.Query.Validator = "elasticsearch"
 	cfg.Elasticsearch.URL = "http://unused.example.com"
 	validator := &fakeValidator{valid: false, errMsg: "parse_exception: cannot parse"}
 	server, err := NewServerWithValidator(cfg, validator, nil, nil)
@@ -299,8 +299,8 @@ func TestProxyFallbackToExplanation(t *testing.T) {
 
 func TestMetricsEndpoint(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.MetricsEnabled = true
-	cfg.MetricsPath = "/metrics"
+	cfg.Metrics.Enabled = true
+	cfg.Metrics.Path = "/metrics"
 	m := metrics.New()
 	server, _ := NewServerWithValidator(cfg, validate.NoOp{}, m, nil)
 
@@ -340,8 +340,8 @@ func TestMetricsRecordedOnDenial(t *testing.T) {
 
 func TestMetricsRequiresAuthWhenConfigured(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.MetricsEnabled = true
-	cfg.MetricsPath = "/metrics"
+	cfg.Metrics.Enabled = true
+	cfg.Metrics.Path = "/metrics"
 	cfg.Auth.Type = "apikey"
 	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
 		"secret": {UserID: "u1", Plan: "free"},
@@ -586,7 +586,7 @@ func TestProxyTimeout(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Elasticsearch.URL = mock.URL
-	cfg.ProxyTimeout = "1ms"
+	cfg.Server.ProxyTimeout = "1ms"
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -615,7 +615,7 @@ func TestProxyCustomPlan(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Elasticsearch.URL = mock.URL
-	cfg.Plans["startup"] = config.Plan{CostLimit: 15, Window: "7d"}
+	cfg.Limits.Plans["startup"] = config.Plan{CostLimit: 15, Window: "7d"}
 	server, err := NewServer(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -728,7 +728,7 @@ func TestServerUpdateConfig(t *testing.T) {
 	defer server.Close()
 
 	newCfg := cfg
-	newCfg.Plans["free"] = config.Plan{CostLimit: 0.1, Window: "1d"}
+	newCfg.Limits.Plans["free"] = config.Plan{CostLimit: 0.1, Window: "1d"}
 	if err := server.UpdateConfig(newCfg); err != nil {
 		t.Fatalf("UpdateConfig: %v", err)
 	}

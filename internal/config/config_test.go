@@ -12,17 +12,17 @@ import (
 
 func TestDefaults(t *testing.T) {
 	cfg := Defaults()
-	if cfg.ListenAddr != ":8080" {
-		t.Errorf("unexpected listen addr: %s", cfg.ListenAddr)
+	if cfg.Server.ListenAddr != ":8080" {
+		t.Errorf("unexpected listen addr: %s", cfg.Server.ListenAddr)
 	}
 	if cfg.Elasticsearch.URL != "http://localhost:9200" {
 		t.Errorf("unexpected es url: %s", cfg.Elasticsearch.URL)
 	}
-	if cfg.RequireWindow {
+	if cfg.Query.RequireWindow {
 		t.Error("expected require_window to be false by default")
 	}
-	if len(cfg.Plans) != 4 {
-		t.Errorf("expected 4 default plans, got %d", len(cfg.Plans))
+	if len(cfg.Limits.Plans) != 4 {
+		t.Errorf("expected 4 default plans, got %d", len(cfg.Limits.Plans))
 	}
 }
 
@@ -51,14 +51,17 @@ func TestLoadWithConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "es-querycost.yaml")
 	content := `
-listen_addr: ":9090"
+server:
+  listen_addr: ":9090"
 elasticsearch:
   url: "http://custom.example.com:9200"
-require_window: true
-plans:
-  free:
-    cost_limit: 10
-    window: "7d"
+query:
+  require_window: true
+limits:
+  plans:
+    free:
+      cost_limit: 10
+      window: "7d"
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -68,32 +71,32 @@ plans:
 	if err != nil {
 		t.Fatalf("loadWith: %v", err)
 	}
-	if cfg.ListenAddr != ":9090" {
-		t.Errorf("listen addr: got %s, want :9090", cfg.ListenAddr)
+	if cfg.Server.ListenAddr != ":9090" {
+		t.Errorf("listen addr: got %s, want :9090", cfg.Server.ListenAddr)
 	}
 	if cfg.Elasticsearch.URL != "http://custom.example.com:9200" {
 		t.Errorf("es url: got %s", cfg.Elasticsearch.URL)
 	}
-	if !cfg.RequireWindow {
+	if !cfg.Query.RequireWindow {
 		t.Error("expected require_window true")
 	}
-	if cfg.Plans["free"].CostLimit != 10 {
-		t.Errorf("free cost limit: got %f, want 10", cfg.Plans["free"].CostLimit)
+	if cfg.Limits.Plans["free"].CostLimit != 10 {
+		t.Errorf("free cost limit: got %f, want 10", cfg.Limits.Plans["free"].CostLimit)
 	}
-	if cfg.Plans["free"].Window != "7d" {
-		t.Errorf("free window: got %s, want 7d", cfg.Plans["free"].Window)
+	if cfg.Limits.Plans["free"].Window != "7d" {
+		t.Errorf("free window: got %s, want 7d", cfg.Limits.Plans["free"].Window)
 	}
 }
 
 func TestLoadWithFlagOverridesEnv(t *testing.T) {
-	t.Setenv("ESQUERY_LISTEN_ADDR", ":7000")
+	t.Setenv("ESQUERY_SERVER_LISTEN_ADDR", ":7000")
 
 	cfg, _, err := loadWith([]string{"--listen-addr", ":8000"})
 	if err != nil {
 		t.Fatalf("loadWith: %v", err)
 	}
-	if cfg.ListenAddr != ":8000" {
-		t.Errorf("flag should override env, got %s", cfg.ListenAddr)
+	if cfg.Server.ListenAddr != ":8000" {
+		t.Errorf("flag should override env, got %s", cfg.Server.ListenAddr)
 	}
 }
 
@@ -129,10 +132,11 @@ func TestLoadWithCustomPlan(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "es-querycost.yaml")
 	content := `
-plans:
-  startup:
-    cost_limit: 75
-    window: "21d"
+limits:
+  plans:
+    startup:
+      cost_limit: 75
+      window: "21d"
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -145,11 +149,11 @@ plans:
 	if path == "" {
 		t.Error("expected config file path to be returned")
 	}
-	if _, ok := cfg.Plans["startup"]; !ok {
+	if _, ok := cfg.Limits.Plans["startup"]; !ok {
 		t.Fatal("expected startup plan from config")
 	}
-	if cfg.Plans["startup"].CostLimit != 75 {
-		t.Errorf("cost limit: got %f, want 75", cfg.Plans["startup"].CostLimit)
+	if cfg.Limits.Plans["startup"].CostLimit != 75 {
+		t.Errorf("cost limit: got %f, want 75", cfg.Limits.Plans["startup"].CostLimit)
 	}
 
 	engine := cfg.BuildEngine()
@@ -162,10 +166,11 @@ func TestWatchReloadsConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "es-querycost.yaml")
 	content := `
-plans:
-  free:
-    cost_limit: 10
-    window: "7d"
+limits:
+  plans:
+    free:
+      cost_limit: 10
+      window: "7d"
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -186,10 +191,11 @@ plans:
 	time.Sleep(100 * time.Millisecond)
 
 	updated := `
-plans:
-  free:
-    cost_limit: 99
-    window: "7d"
+limits:
+  plans:
+    free:
+      cost_limit: 99
+      window: "7d"
 `
 	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
 		t.Fatalf("update config: %v", err)
@@ -198,7 +204,7 @@ plans:
 	select {
 	case <-received:
 		mu.Lock()
-		limit := reloaded.Plans["free"].CostLimit
+		limit := reloaded.Limits.Plans["free"].CostLimit
 		mu.Unlock()
 		if limit != 99 {
 			t.Errorf("expected reloaded limit 99, got %f", limit)

@@ -69,7 +69,7 @@ func NewServer(cfg config.Config, logger *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("build validator: %w", err)
 	}
 	var m *metrics.Metrics
-	if cfg.MetricsEnabled {
+	if cfg.Metrics.Enabled {
 		m = metrics.New()
 	}
 	return newServer(cfg, validator, cfg.BuildAuthenticator(), m, logger)
@@ -88,7 +88,7 @@ func newServer(cfg config.Config, validator validate.Validator, authenticator au
 	if err != nil {
 		return nil, fmt.Errorf("invalid elasticsearch url: %w", err)
 	}
-	timeout, err := parseProxyTimeout(cfg.ProxyTimeout)
+	timeout, err := parseProxyTimeout(cfg.Server.ProxyTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -137,14 +137,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/search", s.handleSearch)
 	mux.HandleFunc("/validate", s.handleValidate)
 	mux.HandleFunc("/healthz", s.handleHealthz)
-	if s.metrics != nil && s.cfg.MetricsPath != "" {
+	if s.metrics != nil && s.cfg.Metrics.Path != "" {
 		if _, ok := s.authenticator.(auth.NoOp); ok {
-			mux.Handle(s.cfg.MetricsPath, s.metrics.Handler())
+			mux.Handle(s.cfg.Metrics.Path, s.metrics.Handler())
 		} else {
-			mux.Handle(s.cfg.MetricsPath, s.requireAuth(s.metrics.Handler()))
+			mux.Handle(s.cfg.Metrics.Path, s.requireAuth(s.metrics.Handler()))
 		}
 	}
-	handler := logger.Middleware(s.logger, s.cfg.Logging.Requests)(sanitizeClientIP(s.cfg.TrustedProxies)(mux))
+	handler := logger.Middleware(s.logger, s.cfg.Logging.Requests)(sanitizeClientIP(s.cfg.Server.TrustedProxies)(mux))
 	return handler
 }
 
@@ -351,7 +351,7 @@ type evalDecision struct {
 
 func (s *Server) resolveQuery(ctx context.Context, queryStr, index string) (query.Node, string, error) {
 	ast, err := query.Parse(queryStr)
-	if err == nil && s.cfg.Validator != "elasticsearch" {
+	if err == nil && s.cfg.Query.Validator != "elasticsearch" {
 		return ast, queryStr, nil
 	}
 
@@ -379,16 +379,16 @@ func (s *Server) resolveQuery(ctx context.Context, queryStr, index string) (quer
 }
 
 func (s *Server) injectDefaultWindow(ast query.Node, ctx map[string]any) string {
-	if s.cfg.RequireWindow {
+	if s.cfg.Query.RequireWindow {
 		return astToString(ast)
 	}
-	qr := rules.QueryWindow{DateFields: s.cfg.DateFields}
+	qr := rules.QueryWindow{DateFields: s.cfg.Query.DateFields}
 	if _, found, _ := qr.FindWindow(ast, time.Now()); found {
 		return astToString(ast)
 	}
 	plan := rules.PlanFromContext(ctx)
 	window := s.cfg.PlanWindow(plan)
-	field := s.cfg.DateField
+	field := s.cfg.Query.DateField
 	if field == "" {
 		field = "@timestamp"
 	}
@@ -557,7 +557,7 @@ func parseProxyTimeout(s string) (time.Duration, error) {
 }
 
 func (s *Server) UpdateConfig(cfg config.Config) error {
-	timeout, err := parseProxyTimeout(cfg.ProxyTimeout)
+	timeout, err := parseProxyTimeout(cfg.Server.ProxyTimeout)
 	if err != nil {
 		return err
 	}

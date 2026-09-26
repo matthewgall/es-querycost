@@ -417,7 +417,7 @@ func TestProxyBoundaryCostAllowed(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Elasticsearch.URL = srv.URL
-	cfg.CostModel.TermCost = 50
+	cfg.Limits.CostModel.TermCost = 50
 	handler := newTestServer(t, cfg)
 
 	body := []byte(`{"query":"asn:AS13335","index":"i","context":{"user":{"plan":"free"}}}`)
@@ -501,7 +501,7 @@ func TestProxyUpstreamConnectionClose(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Elasticsearch.URL = srv.URL
-	cfg.ProxyTimeout = "2s"
+	cfg.Server.ProxyTimeout = "2s"
 	handler := newTestServer(t, cfg)
 
 	body := []byte(`{"query":"asn:AS13335","index":"i","context":{"user":{"plan":"free"}}}`)
@@ -514,7 +514,7 @@ func TestProxyUpstreamConnectionClose(t *testing.T) {
 func TestProxyUnresolvableUpstream(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Elasticsearch.URL = "http://es-querycost.invalid:9200"
-	cfg.ProxyTimeout = "5s"
+	cfg.Server.ProxyTimeout = "5s"
 	handler := newTestServer(t, cfg)
 
 	body := []byte(`{"query":"asn:AS13335","index":"i","context":{"user":{"plan":"free"}}}`)
@@ -532,7 +532,7 @@ func TestProxyUnresolvableUpstream(t *testing.T) {
 func TestProxyInvalidUpstreamScheme(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Elasticsearch.URL = "ftp://localhost:9200"
-	cfg.ProxyTimeout = "2s"
+	cfg.Server.ProxyTimeout = "2s"
 	handler := newTestServer(t, cfg)
 
 	body := []byte(`{"query":"asn:AS13335","index":"i","context":{"user":{"plan":"free"}}}`)

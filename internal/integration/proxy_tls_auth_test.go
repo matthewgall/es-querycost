@@ -122,7 +122,7 @@ func TestProxyUpstreamTimeout(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Elasticsearch.URL = srv.URL
-	cfg.ProxyTimeout = "100ms"
+	cfg.Server.ProxyTimeout = "100ms"
 	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
 	if err != nil {
 		t.Fatalf("create server: %v", err)

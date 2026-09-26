@@ -2,7 +2,8 @@
 # Copy this file and update elasticsearch.url, then run:
 #   ./es-querycost --config config.minimal.yaml
 
-listen_addr: ":8080"
+server:
+  listen_addr: ":8080"
 
 elasticsearch:
   url: "https://localhost:9200"
