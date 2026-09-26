@@ -5,6 +5,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -45,6 +46,20 @@ func esConfig(t *testing.T) config.Config {
 	return cfg
 }
 
+func esInsecureSkipVerify() bool {
+	return os.Getenv("ESQUERY_TEST_ELASTICSEARCH_INSECURE_SKIP_VERIFY") == "true"
+}
+
+func esClient() *http.Client {
+	if esInsecureSkipVerify() {
+		tr := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		return &http.Client{Transport: tr}
+	}
+	return http.DefaultClient
+}
+
 func skipIfESUnreachable(t *testing.T) {
 	t.Helper()
 	if os.Getenv("ESQUERY_TEST_ELASTICSEARCH_URL") == "" && os.Getenv("CI") != "" {
@@ -56,7 +71,7 @@ func skipIfESUnreachable(t *testing.T) {
 	if user, pass := esAuth(); user != "" {
 		req.SetBasicAuth(user, pass)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := esClient().Do(req)
 	if err != nil {
 		t.Skipf("elasticsearch unreachable: %v", err)
 	}
@@ -84,7 +99,7 @@ func ensureIndex(t *testing.T) string {
 	if user, pass := esAuth(); user != "" {
 		req.SetBasicAuth(user, pass)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := esClient().Do(req)
 	if err != nil {
 		t.Fatalf("create index: %v", err)
 	}
