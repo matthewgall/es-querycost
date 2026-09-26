@@ -63,7 +63,7 @@ func parseLevel(level string) slog.Level {
 }
 
 // Middleware wraps an http.Handler with access logging and trace IDs.
-func Middleware(logger *slog.Logger, logRequests bool) func(http.Handler) http.Handler {
+func Middleware(log *slog.Logger, logRequests bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -76,13 +76,17 @@ func Middleware(logger *slog.Logger, logRequests bool) func(http.Handler) http.H
 			next.ServeHTTP(ww, r)
 
 			if logRequests {
-				logger.Info("request",
+				loggedIP := ClientIPFromContext(r.Context())
+				if loggedIP == "" {
+					loggedIP = clientIP(r)
+				}
+				log.Info("request",
 					slog.String("trace_id", traceID),
 					slog.String("method", r.Method),
 					slog.String("path", r.URL.Path),
 					slog.Int("status", ww.statusCode),
 					slog.Duration("duration", time.Since(start)),
-					slog.String("client_ip", clientIP(r)),
+					slog.String("client_ip", loggedIP),
 				)
 			}
 		})

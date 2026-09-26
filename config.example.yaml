@@ -1,5 +1,12 @@
 listen_addr: ":8080"
 
+# List of trusted proxy CIDRs. Only X-Forwarded-For / X-Real-Ip headers from
+# these peers are used to resolve the real client IP. Leave empty (default) to
+# never trust client-supplied forwarding headers; the peer address is used.
+# trusted_proxies:
+#   - "10.0.0.0/8"
+#   - "127.0.0.1/32"
+
 elasticsearch:
   url: "http://localhost:9200"
   # insecure_skip_verify: true

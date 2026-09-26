@@ -560,6 +560,8 @@ func TestProxyStripsSensitiveHeaders(t *testing.T) {
 		"Authorization":       "Basic secret",
 		"Cookie":              "session=abc",
 		"Proxy-Authorization": "Basic proxy-secret",
+		"X-Forwarded-For":     "1.2.3.4, 5.6.7.8",
+		"X-Real-Ip":           "9.9.9.9",
 		"X-Custom":            "keep-me",
 	}
 	body := []byte(`{"query":"asn:AS13335","index":"i","context":{"user":{"plan":"free"}}}`)
@@ -568,10 +570,13 @@ func TestProxyStripsSensitiveHeaders(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	for _, h := range []string{"Authorization", "Cookie", "Proxy-Authorization"} {
+	for _, h := range []string{"Authorization", "Cookie", "Proxy-Authorization", "X-Real-Ip"} {
 		if gotHeaders.Get(h) != "" {
-			t.Fatalf("sensitive header %q leaked upstream: %q", h, gotHeaders.Get(h))
+			t.Fatalf("sensitive/forged header %q leaked upstream: %q", h, gotHeaders.Get(h))
 		}
+	}
+	if got := gotHeaders.Get("X-Forwarded-For"); got != "192.0.2.1" {
+		t.Fatalf("expected X-Forwarded-For rewritten to peer address, got %q", got)
 	}
 	if gotHeaders.Get("X-Custom") != "keep-me" {
 		t.Fatalf("expected non-sensitive header to be preserved, got %q", gotHeaders.Get("X-Custom"))

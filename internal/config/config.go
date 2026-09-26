@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -127,6 +128,7 @@ type LoggingConfig struct {
 // Config is the full configuration loaded from files, env and flags.
 type Config struct {
 	ListenAddr        string              `mapstructure:"listen_addr"`
+	TrustedProxies    []string            `mapstructure:"trusted_proxies"`
 	Elasticsearch     ElasticsearchConfig `mapstructure:"elasticsearch"`
 	Validator         string              `mapstructure:"validator"`
 	MetricsEnabled    bool                `mapstructure:"metrics_enabled"`
@@ -215,6 +217,7 @@ func loadWith(args []string) (Config, string, error) {
 
 	defaults := map[string]any{
 		"listen_addr":        cfg.ListenAddr,
+		"trusted_proxies":    cfg.TrustedProxies,
 		"elasticsearch.url":  cfg.Elasticsearch.URL,
 		"elasticsearch.insecure_skip_verify": cfg.Elasticsearch.InsecureSkipVerify,
 		"elasticsearch.ca_cert":              cfg.Elasticsearch.CACert,
@@ -271,7 +274,24 @@ func loadWith(args []string) (Config, string, error) {
 		return cfg, "", fmt.Errorf("unmarshal config: %w", err)
 	}
 
+	if err := validateTrustedProxies(cfg.TrustedProxies); err != nil {
+		return cfg, "", fmt.Errorf("trusted_proxies: %w", err)
+	}
+
 	return cfg, v.ConfigFileUsed(), nil
+}
+
+func validateTrustedProxies(cidrs []string) error {
+	for _, c := range cidrs {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			return fmt.Errorf("empty trusted_proxy entry")
+		}
+		if _, _, err := net.ParseCIDR(c); err != nil {
+			return fmt.Errorf("invalid cidr %q: %w", c, err)
+		}
+	}
+	return nil
 }
 
 func loadFromReader(r *strings.Reader) (Config, error) {
@@ -284,6 +304,7 @@ func loadFromReader(r *strings.Reader) (Config, error) {
 
 	defaults := map[string]any{
 		"listen_addr":        cfg.ListenAddr,
+		"trusted_proxies":    cfg.TrustedProxies,
 		"elasticsearch.url":  cfg.Elasticsearch.URL,
 		"elasticsearch.insecure_skip_verify": cfg.Elasticsearch.InsecureSkipVerify,
 		"elasticsearch.ca_cert":              cfg.Elasticsearch.CACert,

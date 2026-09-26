@@ -144,7 +144,7 @@ func (s *Server) Handler() http.Handler {
 			mux.Handle(s.cfg.MetricsPath, s.requireAuth(s.metrics.Handler()))
 		}
 	}
-	handler := logger.Middleware(s.logger, s.cfg.Logging.Requests)(mux)
+	handler := logger.Middleware(s.logger, s.cfg.Logging.Requests)(sanitizeClientIP(s.cfg.TrustedProxies)(mux))
 	return handler
 }
 
@@ -477,12 +477,38 @@ func (s *Server) buildUpstreamURL(req SearchRequest, query string) (string, erro
 func copyHeaders(dst, src http.Header) {
 	for k, vs := range src {
 		lk := strings.ToLower(k)
-		if lk == "content-length" || lk == "host" || lk == "authorization" || lk == "cookie" || lk == "set-cookie" || lk == "proxy-authorization" {
+		if lk == "content-length" || lk == "host" || lk == "authorization" || lk == "cookie" || lk == "set-cookie" || lk == "proxy-authorization" || lk == "x-real-ip" || lk == "x-forwarded-host" || lk == "x-forwarded-proto" || lk == "x-forwarded-server" || lk == "forwarded" {
 			continue
 		}
 		for _, v := range vs {
 			dst.Add(k, v)
 		}
+	}
+}
+
+// sanitizeClientIP strips untrusted forwarding headers, resolves the real
+// client IP using the configured trusted proxy CIDRs, and stores the result
+// in the request context for the logger.  The outgoing X-Forwarded-For header
+// is always set to the resolved client IP.
+func sanitizeClientIP(trusted []string) func(http.Handler) http.Handler {
+	networks, _ := parseTrustedNetworks(trusted)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := resolveClientIP(r, networks)
+
+			r.Header.Del("X-Forwarded-For")
+			r.Header.Del("X-Real-Ip")
+			r.Header.Del("X-Forwarded-Host")
+			r.Header.Del("X-Forwarded-Proto")
+			r.Header.Del("X-Forwarded-Server")
+			r.Header.Del("Forwarded")
+			if ip != "" {
+				r.Header.Set("X-Forwarded-For", ip)
+			}
+
+			r = r.WithContext(logger.WithClientIP(r.Context(), ip))
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
