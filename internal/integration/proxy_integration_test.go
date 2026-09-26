@@ -363,7 +363,7 @@ func TestProxyAPIKeyAuth(t *testing.T) {
 	seedDocument(t, index)
 
 	cfg := esConfig(t)
-	cfg.Auth.Type = "api_key"
+	cfg.Auth.Type = "apikey"
 	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
 		"live-test-key": {Plan: "free"},
 	}
