@@ -262,15 +262,21 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path string) (SearchRequest, bool) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes+1))
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return SearchRequest{}, false
 	}
 	defer r.Body.Close()
+	if len(body) > maxRequestBodyBytes {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return SearchRequest{}, false
+	}
 
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
 	var req SearchRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := dec.Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return SearchRequest{}, false
 	}
