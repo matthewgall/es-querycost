@@ -4,6 +4,7 @@
 
 server:
   listen_addr: ":8080"
+  proxy_timeout: "30s"
 
 elasticsearch:
   url: "https://localhost:9200"
@@ -31,5 +32,3 @@ logging:
   level: "info"
   format: "json"
   requests: true
-
-proxy_timeout: "30s"
