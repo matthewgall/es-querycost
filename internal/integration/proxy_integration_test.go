@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,9 +113,30 @@ func ensureIndex(t *testing.T) string {
 	return index
 }
 
+func seedDocument(t *testing.T, index string) {
+	t.Helper()
+	url := fmt.Sprintf("%s/%s/_doc/1?refresh=wait_for", esURL(t), index)
+	doc := fmt.Sprintf(`{"asn":"AS13335","@timestamp":%q,"page":{"url":"https://example.com/foo"}}`, time.Now().UTC().Format(time.RFC3339))
+	req, _ := http.NewRequest(http.MethodPut, url, strings.NewReader(doc))
+	req.Header.Set("Content-Type", "application/json")
+	if user, pass := esAuth(); user != "" {
+		req.SetBasicAuth(user, pass)
+	}
+	resp, err := esClient().Do(req)
+	if err != nil {
+		t.Fatalf("seed document: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("seed document failed: %d %s", resp.StatusCode, string(body))
+	}
+}
+
 func TestProxyAgainstElasticsearch(t *testing.T) {
 	skipIfESUnreachable(t)
 	index := ensureIndex(t)
+	seedDocument(t, index)
 
 	cfg := esConfig(t)
 	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
@@ -137,8 +159,8 @@ func TestProxyAgainstElasticsearch(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if !bytes.Contains(w.Body.Bytes(), []byte(`"hits"`)) {
-		t.Errorf("expected ES response, got %s", w.Body.String())
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"AS13335"`)) {
+		t.Errorf("expected search response to contain seeded document, got %s", w.Body.String())
 	}
 }
 
