@@ -164,6 +164,40 @@ func TestProxyAgainstElasticsearch(t *testing.T) {
 	}
 }
 
+func TestProxyAgainstElasticsearchInvertedQuery(t *testing.T) {
+	skipIfESUnreachable(t)
+	index := ensureIndex(t)
+	seedDocument(t, index)
+
+	cfg := esConfig(t)
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	payload := proxy.SearchRequest{
+		Query: `asn:AS64496 AND @timestamp:[now-14d TO now]`,
+		Index: index,
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte(`"AS13335"`)) {
+		t.Errorf("inverted query unexpectedly returned seeded document: %s", w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"value":0`)) {
+		t.Errorf("expected zero hits, got: %s", w.Body.String())
+	}
+}
+
 func TestProxyDeniesExpensiveQueryAgainstElasticsearch(t *testing.T) {
 	skipIfESUnreachable(t)
 	index := ensureIndex(t)
