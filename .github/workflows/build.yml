@@ -129,7 +129,7 @@ jobs:
             -e xpack.security.enrollment.enabled=false \
             $SSL_ENV \
             -e ES_JAVA_OPTS="-Xms512m -Xmx512m" \
-            docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+            docker.elastic.co/elasticsearch/elasticsearch:9.4.4
           for i in $(seq 1 180); do
             if curl --max-time 5 -sf $CURL_FLAGS -u "elastic:changeme" "$SCHEME://localhost:9200/_cluster/health" > /dev/null; then
               echo "Elasticsearch is healthy (after ${i} attempts)"
