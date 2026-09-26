@@ -302,3 +302,97 @@ func TestProxyMetricsEndpoint(t *testing.T) {
 		t.Errorf("expected /metrics to show a /search request, got: %s", w.Body.String())
 	}
 }
+
+func TestProxyValidateEndpoint(t *testing.T) {
+	cfg := esConfig(t)
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	payload := proxy.SearchRequest{
+		Query: `asn:AS13335`,
+		Index: "any-index",
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/validate", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /validate, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"allowed":true`)) {
+		t.Errorf("expected validate response to allow cheap query, got: %s", w.Body.String())
+	}
+}
+
+func TestProxyEnterprisePlanAllowsExpensiveQuery(t *testing.T) {
+	skipIfESUnreachable(t)
+	index := ensureIndex(t)
+
+	cfg := esConfig(t)
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	payload := proxy.SearchRequest{
+		Query: `asn:AS13335 AND (page.url.keyword:*lidl* OR page.url.keyword:*lidl*)`,
+		Index: index,
+		Context: map[string]any{
+			"user": map[string]any{"plan": "enterprise"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected enterprise plan to allow expensive query, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProxyAPIKeyAuth(t *testing.T) {
+	skipIfESUnreachable(t)
+	index := ensureIndex(t)
+	seedDocument(t, index)
+
+	cfg := esConfig(t)
+	cfg.Auth.Type = "api_key"
+	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
+		"live-test-key": {Plan: "free"},
+	}
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	payload := proxy.SearchRequest{
+		Query: `asn:AS13335 AND @timestamp:[now-14d TO now]`,
+		Index: index,
+	}
+	body, _ := json.Marshal(payload)
+
+	reqMissing := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	wMissing := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wMissing, reqMissing)
+	if wMissing.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without API key, got %d: %s", wMissing.Code, wMissing.Body.String())
+	}
+
+	reqValid := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	reqValid.Header.Set("Authorization", "Apikey live-test-key")
+	wValid := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wValid, reqValid)
+	if wValid.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid API key, got %d: %s", wValid.Code, wValid.Body.String())
+	}
+	if !bytes.Contains(wValid.Body.Bytes(), []byte(`"AS13335"`)) {
+		t.Errorf("expected valid API key request to return seeded document, got: %s", wValid.Body.String())
+	}
+}
