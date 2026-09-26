@@ -583,6 +583,58 @@ func TestProxyStripsSensitiveHeaders(t *testing.T) {
 	}
 }
 
+func TestProxyTrustedProxyResolvesClientIP(t *testing.T) {
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header
+		esSearchHandler()(w, r)
+	}))
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Elasticsearch.URL = srv.URL
+
+	body := []byte(`{"query":"asn:AS13335","index":"i","context":{"user":{"plan":"free"}}}`)
+
+	t.Run("untrusted", func(t *testing.T) {
+		cfg.Server.TrustedProxies = nil
+		handler := newTestServer(t, cfg)
+
+		w := postSearch(t, handler, body, map[string]string{
+			"X-Forwarded-For": "1.2.3.4, 8.8.8.8",
+			"X-Real-Ip":       "9.9.9.9",
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if got := gotHeaders.Get("X-Forwarded-For"); got != "192.0.2.1" {
+			t.Fatalf("expected peer address for untrusted proxy, got %q", got)
+		}
+		if got := gotHeaders.Get("X-Real-Ip"); got != "" {
+			t.Fatalf("X-Real-Ip should be stripped for untrusted proxy, got %q", got)
+		}
+	})
+
+	t.Run("trusted", func(t *testing.T) {
+		cfg.Server.TrustedProxies = []string{"192.0.2.0/24"}
+		handler := newTestServer(t, cfg)
+
+		w := postSearch(t, handler, body, map[string]string{
+			"X-Forwarded-For": "1.2.3.4, 8.8.8.8, 192.0.2.10",
+			"X-Real-Ip":       "9.9.9.9",
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if got := gotHeaders.Get("X-Forwarded-For"); got != "8.8.8.8" {
+			t.Fatalf("expected rightmost non-trusted X-Forwarded-For address, got %q", got)
+		}
+		if got := gotHeaders.Get("X-Real-Ip"); got != "" {
+			t.Fatalf("X-Real-Ip should be stripped even from trusted proxy, got %q", got)
+		}
+	})
+}
+
 // Concurrency and load
 
 func TestProxyConcurrentAllowedAndDenied(t *testing.T) {
