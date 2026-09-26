@@ -115,8 +115,13 @@ func ensureIndex(t *testing.T) string {
 
 func seedDocument(t *testing.T, index string) {
 	t.Helper()
-	url := fmt.Sprintf("%s/%s/_doc/1?refresh=wait_for", esURL(t), index)
 	doc := fmt.Sprintf(`{"asn":"AS13335","@timestamp":%q,"page":{"url":"https://example.com/foo"}}`, time.Now().UTC().Format(time.RFC3339))
+	indexDocument(t, index, doc)
+}
+
+func indexDocument(t *testing.T, index, doc string) {
+	t.Helper()
+	url := fmt.Sprintf("%s/%s/_doc/1?refresh=wait_for", esURL(t), index)
 	req, _ := http.NewRequest(http.MethodPut, url, strings.NewReader(doc))
 	req.Header.Set("Content-Type", "application/json")
 	if user, pass := esAuth(); user != "" {
@@ -124,12 +129,12 @@ func seedDocument(t *testing.T, index string) {
 	}
 	resp, err := esClient().Do(req)
 	if err != nil {
-		t.Fatalf("seed document: %v", err)
+		t.Fatalf("index document: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("seed document failed: %d %s", resp.StatusCode, string(body))
+		t.Fatalf("index document failed: %d %s", resp.StatusCode, string(body))
 	}
 }
 
@@ -222,5 +227,78 @@ func TestProxyDeniesExpensiveQueryAgainstElasticsearch(t *testing.T) {
 
 	if w.Code != http.StatusPaymentRequired {
 		t.Errorf("expected 402, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProxyDefaultWindowExcludesOldDocument(t *testing.T) {
+	skipIfESUnreachable(t)
+	index := ensureIndex(t)
+	oldTimestamp := time.Now().Add(-40 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	oldDoc := fmt.Sprintf(`{"asn":"AS-OLD","@timestamp":%q,"page":{"url":"https://example.com/old"}}`, oldTimestamp)
+	indexDocument(t, index, oldDoc)
+
+	cfg := esConfig(t)
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	// No explicit date window in the query; the gate should inject the free
+	// plan window (14d), which excludes the 40-day-old document.
+	payload := proxy.SearchRequest{
+		Query: `asn:AS-OLD`,
+		Index: index,
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte(`"AS-OLD"`)) {
+		t.Errorf("old document unexpectedly matched default window: %s", w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"value":0`)) {
+		t.Errorf("expected zero hits with default window, got: %s", w.Body.String())
+	}
+}
+
+func TestProxyMetricsEndpoint(t *testing.T) {
+	skipIfESUnreachable(t)
+	index := ensureIndex(t)
+	seedDocument(t, index)
+
+	cfg := esConfig(t)
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	// Make a request so the metrics counter is incremented.
+	payload := proxy.SearchRequest{
+		Query: `asn:AS13335 AND @timestamp:[now-14d TO now]`,
+		Index: index,
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	searchReq := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	server.Handler().ServeHTTP(httptest.NewRecorder(), searchReq)
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, metricsReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /metrics, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`es_querycost_requests_total{path="/search"} 1`)) {
+		t.Errorf("expected /metrics to show a /search request, got: %s", w.Body.String())
 	}
 }
