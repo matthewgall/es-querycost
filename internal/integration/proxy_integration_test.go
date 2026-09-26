@@ -138,6 +138,238 @@ func indexDocument(t *testing.T, index, doc string) {
 	}
 }
 
+func TestProxyHealthz(t *testing.T) {
+	cfg := config.Defaults()
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /healthz, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.TrimSpace(w.Body.String()) != "ok" {
+		t.Errorf("expected body 'ok', got %q", w.Body.String())
+	}
+}
+
+func TestProxyMethodNotAllowed(t *testing.T) {
+	cfg := config.Defaults()
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/search"},
+		{http.MethodPut, "/search"},
+		{http.MethodDelete, "/search"},
+		{http.MethodGet, "/validate"},
+		{http.MethodPut, "/validate"},
+		{http.MethodDelete, "/validate"},
+	} {
+		t.Run(tc.method+"_"+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			if w.Code != http.StatusMethodNotAllowed {
+				t.Errorf("expected 405 for %s %s, got %d: %s", tc.method, tc.path, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxyUnknownPath(t *testing.T) {
+	cfg := config.Defaults()
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/not-a-route", strings.NewReader(`{"query":"foo"}`))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown path, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProxyMalformedJSON(t *testing.T) {
+	cfg := config.Defaults()
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	for _, path := range []string{"/search", "/validate"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{not valid json`))
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400 for malformed JSON on %s, got %d: %s", path, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxyMissingQuery(t *testing.T) {
+	cfg := config.Defaults()
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	for _, path := range []string{"/search", "/validate"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"index":"foo"}`))
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400 for missing query on %s, got %d: %s", path, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxySourceFieldRejectsNestedQuery(t *testing.T) {
+	cfg := config.Defaults()
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	payload := proxy.SearchRequest{
+		Query: `asn:AS13335`,
+		Index: "my-index",
+		Source: map[string]any{
+			"query": map[string]any{"match_all": map[string]any{}},
+		},
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for source.query, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProxySourceFieldAllowsSize(t *testing.T) {
+	skipIfESUnreachable(t)
+	index := ensureIndex(t)
+	seedDocument(t, index)
+
+	cfg := esConfig(t)
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	payload := proxy.SearchRequest{
+		Query: `asn:AS13335 AND @timestamp:[now-14d TO now]`,
+		Index: index,
+		Source: map[string]any{
+			"size": float64(1),
+		},
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"AS13335"`)) {
+		t.Errorf("expected seeded document, got: %s", w.Body.String())
+	}
+	// The response should contain exactly one hit because source.size was forwarded.
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"value":1`)) {
+		t.Errorf("expected exactly one hit when source.size=1, got: %s", w.Body.String())
+	}
+}
+
+func TestProxyAuthOverridesContextPlan(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Elasticsearch.URL = "http://localhost:1" // never reached
+	cfg.Auth.Type = "apikey"
+	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
+		"test-key": {Plan: "free"},
+	}
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	payload := proxy.SearchRequest{
+		Query: `asn:AS13335 AND (page.url.keyword:*lidl* OR page.url.keyword:*lidl*)`,
+		Index: "my-index",
+		Context: map[string]any{
+			"user": map[string]any{"plan": "enterprise"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Apikey test-key")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected auth-derived free plan to deny expensive query (402), got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"allowed":false`)) {
+		t.Errorf("expected denied response body, got: %s", w.Body.String())
+	}
+}
+
+func TestProxyValidateDeniesExpensiveQuery(t *testing.T) {
+	cfg := config.Defaults()
+	// Set an unreachable ES URL to prove /validate never contacts Elasticsearch.
+	cfg.Elasticsearch.URL = "http://localhost:1"
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	payload := proxy.SearchRequest{
+		Query: `asn:AS13335 AND (page.url.keyword:*lidl* OR page.url.keyword:*lidl*)`,
+		Index: "my-index",
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/validate", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected 402 for expensive query, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"allowed":false`)) {
+		t.Errorf("expected allowed:false, got: %s", w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"cost":367`)) {
+		t.Errorf("expected cost 367, got: %s", w.Body.String())
+	}
+}
+
 func TestProxyAgainstElasticsearch(t *testing.T) {
 	skipIfESUnreachable(t)
 	index := ensureIndex(t)
@@ -265,6 +497,37 @@ func TestProxyDefaultWindowExcludesOldDocument(t *testing.T) {
 	}
 	if !bytes.Contains(w.Body.Bytes(), []byte(`"value":0`)) {
 		t.Errorf("expected zero hits with default window, got: %s", w.Body.String())
+	}
+}
+
+func TestProxyMetricsRequiresAuth(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Auth.Type = "apikey"
+	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
+		"metrics-key": {Plan: "free"},
+	}
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	reqMissing := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	wMissing := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wMissing, reqMissing)
+	if wMissing.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for /metrics without auth, got %d: %s", wMissing.Code, wMissing.Body.String())
+	}
+
+	reqValid := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	reqValid.Header.Set("Authorization", "Apikey metrics-key")
+	wValid := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wValid, reqValid)
+	if wValid.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /metrics with valid key, got %d: %s", wValid.Code, wValid.Body.String())
+	}
+	ct := wValid.Header().Get("Content-Type")
+	if !strings.Contains(ct, "text/plain") {
+		t.Errorf("expected text/plain metrics, got Content-Type %q", ct)
 	}
 }
 
