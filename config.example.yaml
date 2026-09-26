@@ -1,6 +1,6 @@
 # Server / HTTP settings.
 server:
-  listen_addr: ":8080"
+  listen_addr: "127.0.0.1:8080"
   proxy_timeout: "30s"
 
   # List of trusted proxy CIDRs. Only X-Forwarded-For / X-Real-Ip headers from

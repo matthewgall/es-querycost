@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"es-querycost/internal/auth"
@@ -48,15 +49,24 @@ type SearchResponse struct {
 
 // Server wires together the cost gate and the Elasticsearch proxy.
 type Server struct {
+	state   atomic.Value // serverState
+	metrics *metrics.Metrics
+	logger  *slog.Logger
+}
+
+// serverState holds the mutable configuration that can be swapped at runtime.
+type serverState struct {
 	cfg           config.Config
 	model         cost.Model
 	engine        *rules.Engine
 	validator     validate.Validator
 	authenticator auth.Authenticator
-	metrics       *metrics.Metrics
-	logger        *slog.Logger
 	client        *http.Client
 	target        *url.URL
+}
+
+func (s *Server) current() serverState {
+	return s.state.Load().(serverState)
 }
 
 // NewServer creates a Server. It returns an error if the Elasticsearch URL is invalid.
@@ -97,16 +107,24 @@ func newServer(cfg config.Config, validator validate.Validator, authenticator au
 		return nil, fmt.Errorf("proxy http client: %w", err)
 	}
 	return &Server{
+		state:   newServerState(cfg, validator, authenticator, target, client),
+		metrics: m,
+		logger:  logger,
+	}, nil
+}
+
+func newServerState(cfg config.Config, validator validate.Validator, authenticator auth.Authenticator, target *url.URL, client *http.Client) atomic.Value {
+	v := atomic.Value{}
+	v.Store(serverState{
 		cfg:           cfg,
 		model:         cfg.BuildCostModel(),
 		engine:        cfg.BuildEngine(),
 		validator:     validator,
 		authenticator: authenticator,
-		metrics:       m,
-		logger:        logger,
 		client:        client,
 		target:        target,
-	}, nil
+	})
+	return v
 }
 
 func newProxyClient(cfg config.Config, timeout time.Duration) (*http.Client, error) {
@@ -133,18 +151,19 @@ func newProxyClient(cfg config.Config, timeout time.Duration) (*http.Client, err
 
 // Handler returns the http.Handler for the gate.
 func (s *Server) Handler() http.Handler {
+	st := s.current()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/search", s.handleSearch)
 	mux.HandleFunc("/validate", s.handleValidate)
 	mux.HandleFunc("/healthz", s.handleHealthz)
-	if s.metrics != nil && s.cfg.Metrics.Path != "" {
-		if _, ok := s.authenticator.(auth.NoOp); ok {
-			mux.Handle(s.cfg.Metrics.Path, s.metrics.Handler())
+	if s.metrics != nil && st.cfg.Metrics.Path != "" {
+		if _, ok := st.authenticator.(auth.NoOp); ok {
+			mux.Handle(st.cfg.Metrics.Path, s.metrics.Handler())
 		} else {
-			mux.Handle(s.cfg.Metrics.Path, s.requireAuth(s.metrics.Handler()))
+			mux.Handle(st.cfg.Metrics.Path, s.requireAuth(st.authenticator)(s.metrics.Handler()))
 		}
 	}
-	handler := logger.Middleware(s.logger, s.cfg.Logging.Requests)(sanitizeClientIP(s.cfg.Server.TrustedProxies)(mux))
+	handler := logger.Middleware(s.logger, st.cfg.Logging.Requests)(sanitizeClientIP(st.cfg.Server.TrustedProxies)(mux))
 	return handler
 }
 
@@ -161,6 +180,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if s.metrics != nil {
 		s.metrics.RecordRequest("/search")
 	}
+
+	st := s.current()
 
 	req, ok := s.parseAndAuth(w, r, "/search")
 	if !ok {
@@ -182,9 +203,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := s.injectDefaultWindow(decision.AST, req.Context)
+	query := s.injectDefaultWindow(decision.AST, req.Context, st)
 
-	upstream, err := s.buildUpstreamURL(req, query)
+	upstream, err := s.buildUpstreamURL(req, query, st)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -202,15 +223,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyHeaders(outReq.Header, r.Header)
-	if s.cfg.Elasticsearch.Username != "" {
-		outReq.SetBasicAuth(s.cfg.Elasticsearch.Username, s.cfg.Elasticsearch.Password)
+	if st.cfg.Elasticsearch.Username != "" {
+		outReq.SetBasicAuth(st.cfg.Elasticsearch.Username, st.cfg.Elasticsearch.Password)
 	}
 	if outBody != nil {
 		outReq.Header.Set("Content-Type", "application/json")
 	}
 
 	proxyStart := time.Now()
-	resp, err := s.client.Do(outReq)
+	resp, err := st.client.Do(outReq)
 	if s.metrics != nil {
 		s.metrics.ObserveProxy(time.Since(proxyStart).Seconds())
 	}
@@ -262,6 +283,7 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path string) (SearchRequest, bool) {
+	st := s.current()
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes+1))
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
@@ -285,7 +307,7 @@ func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path strin
 		return SearchRequest{}, false
 	}
 
-	authCtx, err := s.authenticator.Authenticate(r)
+	authCtx, err := st.authenticator.Authenticate(r)
 	if err != nil {
 		if s.metrics != nil {
 			s.metrics.RecordDenial("auth_failed")
@@ -300,7 +322,7 @@ func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path strin
 	// must override anything supplied in the request body to prevent users from
 	// escalating their plan via context.user.plan. In no-auth mode the request
 	// body is the only source of identity, so it is retained.
-	if _, ok := s.authenticator.(auth.NoOp); ok {
+	if _, ok := st.authenticator.(auth.NoOp); ok {
 		req.Context = mergeContext(authCtx.ToMap(), req.Context)
 	} else {
 		req.Context = mergeContext(req.Context, authCtx.ToMap())
@@ -309,7 +331,8 @@ func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path strin
 }
 
 func (s *Server) evaluate(w http.ResponseWriter, r *http.Request, req SearchRequest, evalStart time.Time) (evalDecision, bool) {
-	ast, queryUsed, err := s.resolveQuery(r.Context(), req.Query, req.Index)
+	st := s.current()
+	ast, queryUsed, err := s.resolveQuery(r.Context(), st, req.Query, req.Index)
 	if err != nil {
 		if s.metrics != nil {
 			s.metrics.RecordDenial("invalid_query")
@@ -325,8 +348,8 @@ func (s *Server) evaluate(w http.ResponseWriter, r *http.Request, req SearchRequ
 		return evalDecision{}, false
 	}
 
-	report := cost.Estimate(ast, s.model)
-	decision := s.engine.Evaluate(queryUsed, ast, report, req.Context)
+	report := cost.Estimate(ast, st.model)
+	decision := st.engine.Evaluate(queryUsed, ast, report, req.Context)
 	if s.metrics != nil {
 		s.metrics.ObserveEval(time.Since(evalStart).Seconds())
 		s.metrics.ObserveCost(report.Cost)
@@ -349,13 +372,13 @@ type evalDecision struct {
 	AST     query.Node
 }
 
-func (s *Server) resolveQuery(ctx context.Context, queryStr, index string) (query.Node, string, error) {
+func (s *Server) resolveQuery(ctx context.Context, st serverState, queryStr, index string) (query.Node, string, error) {
 	ast, err := query.Parse(queryStr)
-	if err == nil && s.cfg.Query.Validator != "elasticsearch" {
+	if err == nil && st.cfg.Query.Validator != "elasticsearch" {
 		return ast, queryStr, nil
 	}
 
-	result, vErr := s.validator.Validate(ctx, index, queryStr)
+	result, vErr := st.validator.Validate(ctx, index, queryStr)
 	if vErr != nil {
 		return nil, "", fmt.Errorf("elasticsearch validation failed: %w", vErr)
 	}
@@ -378,17 +401,17 @@ func (s *Server) resolveQuery(ctx context.Context, queryStr, index string) (quer
 	return nil, "", fmt.Errorf("query syntax not supported for cost estimation: %v", err)
 }
 
-func (s *Server) injectDefaultWindow(ast query.Node, ctx map[string]any) string {
-	if s.cfg.Query.RequireWindow {
+func (s *Server) injectDefaultWindow(ast query.Node, ctx map[string]any, st serverState) string {
+	if st.cfg.Query.RequireWindow {
 		return astToString(ast)
 	}
-	qr := rules.QueryWindow{DateFields: s.cfg.Query.DateFields}
+	qr := rules.QueryWindow{DateFields: st.cfg.Query.DateFields}
 	if _, found, _ := qr.FindWindow(ast, time.Now()); found {
 		return astToString(ast)
 	}
 	plan := rules.PlanFromContext(ctx)
-	window := s.cfg.PlanWindow(plan)
-	field := s.cfg.Query.DateField
+	window := st.cfg.PlanWindow(plan)
+	field := st.cfg.Query.DateField
 	if field == "" {
 		field = "@timestamp"
 	}
@@ -454,13 +477,13 @@ var allowedSourceFields = map[string]bool{
 	"collapse":         true,
 }
 
-func (s *Server) buildUpstreamURL(req SearchRequest, query string) (string, error) {
+func (s *Server) buildUpstreamURL(req SearchRequest, query string, st serverState) (string, error) {
 	index := strings.Trim(req.Index, "/")
 	path := "/_search"
 	if index != "" {
 		path = "/" + index + path
 	}
-	upstream := strings.TrimRight(s.target.String(), "/") + path
+	upstream := strings.TrimRight(st.target.String(), "/") + path
 	if req.Source == nil {
 		u, err := url.Parse(upstream)
 		if err != nil {
@@ -512,14 +535,16 @@ func sanitizeClientIP(trusted []string) func(http.Handler) http.Handler {
 	}
 }
 
-func (s *Server) requireAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := s.authenticator.Authenticate(r); err != nil {
-			http.Error(w, err.Error(), http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+func (s *Server) requireAuth(authenticator auth.Authenticator) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := authenticator.Authenticate(r); err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func respondJSON(w http.ResponseWriter, status int, payload any) {
@@ -566,21 +591,27 @@ func (s *Server) UpdateConfig(cfg config.Config) error {
 		return fmt.Errorf("invalid elasticsearch url: %w", err)
 	}
 
-	oldAuth := s.authenticator
+	oldAuth := s.current().authenticator
 	client, err := newProxyClient(cfg, timeout)
 	if err != nil {
 		return err
 	}
-	s.cfg = cfg
-	s.model = cfg.BuildCostModel()
-	s.engine = cfg.BuildEngine()
-	s.validator, err = cfg.BuildValidator()
+
+	validator, err := cfg.BuildValidator()
 	if err != nil {
 		return fmt.Errorf("build validator: %w", err)
 	}
-	s.authenticator = cfg.BuildAuthenticator()
-	s.client = client
-	s.target = target
+
+	newState := serverState{
+		cfg:           cfg,
+		model:         cfg.BuildCostModel(),
+		engine:        cfg.BuildEngine(),
+		validator:     validator,
+		authenticator: cfg.BuildAuthenticator(),
+		client:        client,
+		target:        target,
+	}
+	s.state.Store(newState)
 
 	go func() {
 		if err := oldAuth.Close(); err != nil {
@@ -594,8 +625,8 @@ func (s *Server) UpdateConfig(cfg config.Config) error {
 
 // Close releases resources held by the server.
 func (s *Server) Close() error {
-	if s.authenticator != nil {
-		return s.authenticator.Close()
+	if st := s.current(); st.authenticator != nil {
+		return st.authenticator.Close()
 	}
 	return nil
 }

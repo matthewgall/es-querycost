@@ -90,6 +90,29 @@ func TestJWKSIssuerAudience(t *testing.T) {
 	}
 }
 
+func TestJWKSRejectsDisallowedAlgorithm(t *testing.T) {
+	_, jwks := newRSAJWKS(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(jwks)
+	}))
+	defer server.Close()
+
+	j := &JWKS{URL: server.URL}
+	// Sign with HMAC using a symmetric secret; this should be rejected because
+	// only RSA/ECDSA/OKP algorithms are allowed.
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":  "user-rsa",
+		"plan": "enterprise",
+	})
+	tokenString, _ := token.SignedString([]byte("not-a-secret"))
+
+	req, _ := http.NewRequest(http.MethodPost, "/search", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenString)
+	if _, err := j.Authenticate(req); err == nil {
+		t.Error("expected HMAC token to be rejected")
+	}
+}
+
 func newRSAJWKS(t *testing.T) (*rsa.PrivateKey, []byte) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

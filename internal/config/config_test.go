@@ -12,7 +12,7 @@ import (
 
 func TestDefaults(t *testing.T) {
 	cfg := Defaults()
-	if cfg.Server.ListenAddr != ":8080" {
+	if cfg.Server.ListenAddr != "127.0.0.1:8080" {
 		t.Errorf("unexpected listen addr: %s", cfg.Server.ListenAddr)
 	}
 	if cfg.Elasticsearch.URL != "http://localhost:9200" {
@@ -211,6 +211,71 @@ limits:
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for config reload")
+	}
+}
+
+func TestValidateAuth(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     AuthConfig
+		wantErr bool
+	}{
+		{
+			name:    "none ok",
+			cfg:     AuthConfig{Type: "none"},
+			wantErr: false,
+		},
+		{
+			name:    "jwks https ok",
+			cfg:     AuthConfig{Type: "jwks", JWKSURL: "https://idp/.well-known/jwks.json"},
+			wantErr: false,
+		},
+		{
+			name:    "jwks requires url",
+			cfg:     AuthConfig{Type: "jwks"},
+			wantErr: true,
+		},
+		{
+			name:    "jwks rejects http",
+			cfg:     AuthConfig{Type: "jwks", JWKSURL: "http://idp/.well-known/jwks.json"},
+			wantErr: true,
+		},
+		{
+			name:    "jwks rejects missing host",
+			cfg:     AuthConfig{Type: "jwks", JWKSURL: "https://"},
+			wantErr: true,
+		},
+		{
+			name:    "apikey requires keys",
+			cfg:     AuthConfig{Type: "apikey"},
+			wantErr: true,
+		},
+		{
+			name:    "apikey ok",
+			cfg:     AuthConfig{Type: "apikey", APIKey: map[string]ContextFromConfig{"k": {}}},
+			wantErr: false,
+		},
+		{
+			name:    "jwt requires secret",
+			cfg:     AuthConfig{Type: "jwt"},
+			wantErr: true,
+		},
+		{
+			name:    "unsupported type",
+			cfg:     AuthConfig{Type: "oauth"},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuth(tt.cfg)
+			if tt.wantErr && err == nil {
+				t.Errorf("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

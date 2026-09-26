@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -168,7 +169,7 @@ type Config struct {
 func Defaults() Config {
 	return Config{
 		Server: ServerConfig{
-			ListenAddr:     ":8080",
+			ListenAddr:     "127.0.0.1:8080",
 			ProxyTimeout:   "30s",
 			TrustedProxies: nil,
 		},
@@ -306,8 +307,43 @@ func loadWith(args []string) (Config, string, error) {
 	if err := validateTrustedProxies(cfg.Server.TrustedProxies); err != nil {
 		return cfg, "", fmt.Errorf("trusted_proxies: %w", err)
 	}
+	if err := validateAuth(cfg.Auth); err != nil {
+		return cfg, "", fmt.Errorf("auth: %w", err)
+	}
 
 	return cfg, v.ConfigFileUsed(), nil
+}
+
+func validateAuth(ac AuthConfig) error {
+	switch ac.Type {
+	case "jwks":
+		if ac.JWKSURL == "" {
+			return fmt.Errorf("jwks_url is required")
+		}
+		u, err := url.Parse(ac.JWKSURL)
+		if err != nil {
+			return fmt.Errorf("invalid jwks_url: %w", err)
+		}
+		if u.Scheme != "https" {
+			return fmt.Errorf("jwks_url must use https")
+		}
+		if u.Host == "" {
+			return fmt.Errorf("jwks_url must have a host")
+		}
+	case "apikey":
+		if len(ac.APIKey) == 0 {
+			return fmt.Errorf("api_keys is required")
+		}
+	case "jwt":
+		if ac.JWTSecret == "" {
+			return fmt.Errorf("jwt_secret is required")
+		}
+	case "none", "":
+		return nil
+	default:
+		return fmt.Errorf("unsupported auth type %q", ac.Type)
+	}
+	return nil
 }
 
 func validateTrustedProxies(cidrs []string) error {

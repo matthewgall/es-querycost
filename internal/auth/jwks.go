@@ -10,6 +10,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+var allowedJWKSAlgorithms = []string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA"}
+
 // JWKS validates RSA/ECDSA/OKP JWTs using keys fetched from a JWKS endpoint.
 // It launches a background refresh goroutine so rotated keys are picked up
 // automatically.
@@ -26,6 +28,10 @@ type JWKS struct {
 	Audience string
 	// RefreshInterval controls how often the JWKS is refreshed. Defaults to 1h.
 	RefreshInterval time.Duration
+
+	// Client is an optional HTTP client used to fetch JWKS keys. If nil, the
+	// default client is used. Tests may set this to skip TLS verification.
+	Client *http.Client
 
 	keyfunc    jwt.Keyfunc
 	parsed     bool
@@ -45,7 +51,9 @@ func (j *JWKS) Authenticate(r *http.Request) (Context, error) {
 	}
 
 	claims := jwt.MapClaims{}
-	opts := []jwt.ParserOption{}
+	opts := []jwt.ParserOption{
+		jwt.WithValidMethods(allowedJWKSAlgorithms),
+	}
 	if j.Issuer != "" {
 		opts = append(opts, jwt.WithIssuer(j.Issuer))
 	}
@@ -93,7 +101,13 @@ func (j *JWKS) init() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	j.cancelFunc = cancel
 
-	kf, err := keyfunc.NewDefaultCtx(ctx, []string{j.URL})
+	var kf keyfunc.Keyfunc
+	var err error
+	if j.Client != nil {
+		kf, err = keyfunc.NewDefaultOverrideCtx(ctx, []string{j.URL}, keyfunc.Override{Client: j.Client})
+	} else {
+		kf, err = keyfunc.NewDefaultCtx(ctx, []string{j.URL})
+	}
 	if err != nil {
 		cancel()
 		return fmt.Errorf("create jwks keyfunc: %w", err)
