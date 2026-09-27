@@ -715,6 +715,79 @@ func TestProxyValidateMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestProxyStructuredErrors(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Auth.Type = "apikey"
+	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
+		"good-key": {UserID: "u1", Plan: "pro"},
+	}
+	server, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	assertError := func(t *testing.T, w *httptest.ResponseRecorder, status int, code string) {
+		t.Helper()
+		if w.Code != status {
+			t.Fatalf("expected %d, got %d: %s", status, w.Code, w.Body.String())
+		}
+		ct := w.Header().Get("Content-Type")
+		if !strings.Contains(ct, "application/json") {
+			t.Errorf("expected JSON content type, got %q", ct)
+		}
+		var body ErrorResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("error body is not valid JSON: %v\n%s", err, w.Body.String())
+		}
+		if body.Error.Code != code {
+			t.Errorf("expected error code %q, got %q", code, body.Error.Code)
+		}
+		if body.Error.Message == "" {
+			t.Errorf("expected non-empty error message")
+		}
+	}
+
+	t.Run("method not allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/search", nil)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		assertError(t, w, http.StatusMethodNotAllowed, "method_not_allowed")
+	})
+
+	t.Run("missing query", func(t *testing.T) {
+		body, _ := json.Marshal(SearchRequest{Index: "idx"})
+		req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		assertError(t, w, http.StatusBadRequest, "bad_request")
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader("not json"))
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		assertError(t, w, http.StatusBadRequest, "bad_request")
+	})
+
+	t.Run("auth failed", func(t *testing.T) {
+		body, _ := json.Marshal(SearchRequest{Query: "asn:AS13335"})
+		req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+		req.Header.Set("Authorization", "ApiKey bad-key")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		assertError(t, w, http.StatusUnauthorized, "auth_failed")
+	})
+
+	t.Run("request entity too large", func(t *testing.T) {
+		big := append([]byte(`{"query":"`), bytes.Repeat([]byte("x"), maxRequestBodyBytes+100)...)
+		big = append(big, []byte(`"}`)...)
+		req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(big))
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		assertError(t, w, http.StatusRequestEntityTooLarge, "request_entity_too_large")
+	})
+}
+
 func TestServerUpdateConfig(t *testing.T) {
 	mock := startMockES(t, "/my-index/_search")
 	defer mock.Close()

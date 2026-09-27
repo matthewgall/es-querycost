@@ -47,6 +47,17 @@ type SearchResponse struct {
 	Report  cost.Report `json:"report,omitempty"`
 }
 
+// ErrorResponse is the standard JSON error envelope returned by the gate.
+type ErrorResponse struct {
+	Error ErrorDetail `json:"error"`
+}
+
+// ErrorDetail describes a single error.
+type ErrorDetail struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 // Server wires together the cost gate and the Elasticsearch proxy.
 type Server struct {
 	state   atomic.Value // serverState
@@ -174,7 +185,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	if s.metrics != nil {
@@ -207,19 +218,19 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	upstream, err := s.buildUpstreamURL(req, query, st)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 
 	outBody, err := s.buildRequestBody(req, query)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 
 	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstream, outBody)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal_server_error", err.Error())
 		return
 	}
 	copyHeaders(outReq.Header, r.Header)
@@ -236,7 +247,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		s.metrics.ObserveProxy(time.Since(proxyStart).Seconds())
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeError(w, http.StatusBadGateway, "bad_gateway", err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -252,7 +263,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	if s.metrics != nil {
@@ -286,12 +297,12 @@ func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path strin
 	st := s.current()
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes+1))
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "bad_request", "failed to read body")
 		return SearchRequest{}, false
 	}
 	defer r.Body.Close()
 	if len(body) > maxRequestBodyBytes {
-		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		writeError(w, http.StatusRequestEntityTooLarge, "request_entity_too_large", "request body too large")
 		return SearchRequest{}, false
 	}
 
@@ -299,11 +310,11 @@ func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path strin
 	dec.DisallowUnknownFields()
 	var req SearchRequest
 	if err := dec.Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid json")
 		return SearchRequest{}, false
 	}
 	if req.Query == "" {
-		http.Error(w, "query is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "bad_request", "query is required")
 		return SearchRequest{}, false
 	}
 
@@ -315,7 +326,7 @@ func (s *Server) parseAndAuth(w http.ResponseWriter, r *http.Request, path strin
 		if s.logger != nil {
 			s.logger.Warn("authentication failed", traceAttr(r.Context()), slog.String("error", err.Error()))
 		}
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "auth_failed", err.Error())
 		return SearchRequest{}, false
 	}
 	// Merge auth-derived identity. When authentication is configured, auth values
@@ -539,12 +550,16 @@ func (s *Server) requireAuth(authenticator auth.Authenticator) func(http.Handler
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if _, err := authenticator.Authenticate(r); err != nil {
-				http.Error(w, err.Error(), http.StatusUnauthorized)
+				writeError(w, http.StatusUnauthorized, "auth_failed", err.Error())
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	respondJSON(w, status, ErrorResponse{Error: ErrorDetail{Code: code, Message: message}})
 }
 
 func respondJSON(w http.ResponseWriter, status int, payload any) {
