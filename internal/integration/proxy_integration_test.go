@@ -566,6 +566,36 @@ func TestProxyMetricsEndpoint(t *testing.T) {
 	}
 }
 
+func TestProxyValidateRejectsForbiddenFeature(t *testing.T) {
+	cfg := esConfig(t)
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	payload := proxy.SearchRequest{
+		Query: `*:*`,
+		Index: "any-index",
+		Context: map[string]any{
+			"user": map[string]any{"plan": "free"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/validate", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected 402 for forbidden feature, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"allowed":false`)) {
+		t.Errorf("expected allowed:false, got: %s", w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`forbidden query feature: match_all`)) {
+		t.Errorf("expected match_all reason, got: %s", w.Body.String())
+	}
+}
+
 func TestProxyValidateEndpoint(t *testing.T) {
 	cfg := esConfig(t)
 	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
@@ -617,6 +647,95 @@ func TestProxyEnterprisePlanAllowsExpensiveQuery(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected enterprise plan to allow expensive query, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func createIndex(t *testing.T, index string) {
+	t.Helper()
+	url := esURL(t) + "/" + index
+	req, _ := http.NewRequest(http.MethodPut, url, strings.NewReader(`{
+		"settings": {"number_of_shards": 1, "number_of_replicas": 0},
+		"mappings": {
+			"properties": {
+				"asn": {"type": "keyword"},
+				"page": {"properties": {"url": {"type": "text", "fields": {"keyword": {"type": "keyword"}}}}},
+				"@timestamp": {"type": "date"}
+			}
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	if user, pass := esAuth(); user != "" {
+		req.SetBasicAuth(user, pass)
+	}
+	resp, err := esClient().Do(req)
+	if err != nil {
+		t.Fatalf("create index %s: %v", index, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create index %s failed: %d %s", index, resp.StatusCode, string(body))
+	}
+}
+
+func TestProxyMultiIndexAndWildcard(t *testing.T) {
+	skipIfESUnreachable(t)
+
+	indexA := "es-querycost-test-a"
+	indexB := "es-querycost-test-b"
+	createIndex(t, indexA)
+	createIndex(t, indexB)
+
+	ts := time.Now().UTC().Format(time.RFC3339)
+	indexDocument(t, indexA, fmt.Sprintf(`{"asn":"AS_A","@timestamp":%q,"page":{"url":"https://example.com/a"}}`, ts))
+	indexDocument(t, indexB, fmt.Sprintf(`{"asn":"AS_B","@timestamp":%q,"page":{"url":"https://example.com/b"}}`, ts))
+
+	cfg := esConfig(t)
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		index string
+		want  []string
+	}{
+		{
+			name:  "wildcard",
+			index: "es-querycost-test-*",
+			want:  []string{"AS_A", "AS_B"},
+		},
+		{
+			name:  "comma separated",
+			index: "es-querycost-test-a,es-querycost-test-b",
+			want:  []string{"AS_A", "AS_B"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := proxy.SearchRequest{
+				Query: `asn:AS_A OR asn:AS_B`,
+				Index: tc.index,
+				Context: map[string]any{
+					"user": map[string]any{"plan": "free"},
+				},
+			}
+			body, _ := json.Marshal(payload)
+			req := httptest.NewRequest(http.MethodPost, "/search", bytes.NewReader(body))
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200 for %s, got %d: %s", tc.index, w.Code, w.Body.String())
+			}
+			for _, as := range tc.want {
+				if !bytes.Contains(w.Body.Bytes(), []byte(as)) {
+					t.Errorf("expected response to contain %s, got: %s", as, w.Body.String())
+				}
+			}
+		})
 	}
 }
 

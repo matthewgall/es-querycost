@@ -637,6 +637,53 @@ func TestProxyTrustedProxyResolvesClientIP(t *testing.T) {
 
 // Concurrency and load
 
+func TestProxyMetricsDenialReasons(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"hits":{"total":{"value":0},"hits":[]}}`))
+	}))
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Elasticsearch.URL = srv.URL
+	cfg.Auth.Type = "apikey"
+	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
+		"valid-key": {UserID: "u1", Plan: "free"},
+	}
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	handler := server.Handler()
+
+	// One allowed request.
+	postSearch(t, handler, []byte(`{"query":"asn:AS13335","index":"i"}`), map[string]string{"Authorization": "apikey valid-key"})
+	// One auth failure.
+	postSearch(t, handler, []byte(`{"query":"asn:AS13335","index":"i"}`), map[string]string{"Authorization": "apikey wrong-key"})
+	// One cost-limit denial.
+	postSearch(t, handler, []byte(`{"query":"*:*"}`), map[string]string{"Authorization": "apikey valid-key"})
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "apikey valid-key")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for metrics, got %d: %s", w.Code, w.Body.String())
+	}
+	output := w.Body.String()
+	if !strings.Contains(output, `es_querycost_requests_total{path="/search"} 3`) {
+		t.Errorf("expected 3 search requests in metrics, got:\n%s", output)
+	}
+	if !strings.Contains(output, `es_querycost_denials_total{reason="auth_failed"} 1`) {
+		t.Errorf("expected one auth_failed denial in metrics, got:\n%s", output)
+	}
+	if !strings.Contains(output, `es_querycost_denials_total{reason="forbidden query feature: match_all"} 1`) {
+		t.Errorf("expected one match_all feature denial in metrics, got:\n%s", output)
+	}
+}
+
 func TestProxyConcurrentAllowedAndDenied(t *testing.T) {
 	srv := httptest.NewServer(esSearchHandler())
 	defer srv.Close()
@@ -690,5 +737,56 @@ func TestProxyConcurrentAllowedAndDenied(t *testing.T) {
 	}
 	if !strings.Contains(output, `es_querycost_denials_total{reason="forbidden query feature: match_all"}`) {
 		t.Fatalf("expected match_all denials in metrics, got:\n%s", output)
+	}
+}
+
+func TestProxyConfigHotReload(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"hits":{"total":{"value":0},"hits":[]}}`))
+	}))
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Elasticsearch.URL = srv.URL
+	cfg.Auth.Type = "apikey"
+	cfg.Auth.APIKey = map[string]config.ContextFromConfig{
+		"old-key": {UserID: "u1", Plan: "free"},
+	}
+	server, err := proxy.NewServer(cfg, logger.New(logger.Defaults(), nil))
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	handler := server.Handler()
+
+	body := []byte(`{"query":"asn:AS13335"}`)
+	wOld := postSearch(t, handler, body, map[string]string{"Authorization": "apikey old-key"})
+	if wOld.Code != http.StatusOK {
+		t.Fatalf("expected 200 with old key, got %d: %s", wOld.Code, wOld.Body.String())
+	}
+
+	newCfg := config.Defaults()
+	newCfg.Elasticsearch.URL = srv.URL
+	newCfg.Auth.Type = "apikey"
+	newCfg.Auth.APIKey = map[string]config.ContextFromConfig{
+		"new-key": {UserID: "u2", Plan: "free"},
+	}
+	if err := server.UpdateConfig(newCfg); err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+
+	// The previous authenticator is closed asynchronously; give it a moment to
+	// avoid a benign race during shutdown assertions.
+	time.Sleep(10 * time.Millisecond)
+
+	wOldAfter := postSearch(t, handler, body, map[string]string{"Authorization": "apikey old-key"})
+	if wOldAfter.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 after reload with old key, got %d: %s", wOldAfter.Code, wOldAfter.Body.String())
+	}
+
+	wNew := postSearch(t, handler, body, map[string]string{"Authorization": "apikey new-key"})
+	if wNew.Code != http.StatusOK {
+		t.Errorf("expected 200 after reload with new key, got %d: %s", wNew.Code, wNew.Body.String())
 	}
 }
