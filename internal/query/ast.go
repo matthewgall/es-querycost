@@ -4,6 +4,7 @@ package query
 import (
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Node is the interface implemented by all nodes in the Lucene query AST.
@@ -82,7 +83,32 @@ type Term struct {
 
 func (Term) isNode() {}
 
-func (t Term) String() string { return t.Value }
+func (t Term) String() string {
+	if t.Wildcard || t.Prefix || !needsQuote(t.Value) {
+		return t.Value
+	}
+	return strconv.Quote(t.Value)
+}
+
+// needsQuote reports whether a bare term value must be quoted to remain a
+// single valid token when serialised back to a Lucene query string.
+func needsQuote(v string) bool {
+	if v == "" {
+		return true
+	}
+	for _, r := range v {
+		switch {
+		case unicode.IsSpace(r):
+			return true
+		}
+		switch r {
+		case ':', '/', '\\', '"', '\'', '(', ')', '[', ']', '{', '}',
+			'+', '-', '~', '^', '|', '&', '!':
+			return true
+		}
+	}
+	return false
+}
 
 // Phrase is a quoted phrase.
 type Phrase struct {

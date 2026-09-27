@@ -334,7 +334,7 @@ func TestProxyLiveRoundTripSimpleQueries(t *testing.T) {
 	}{
 		{"term", `asn:AS11111`, []string{"AS11111"}},
 		{"boolean_or", `asn:AS11111 OR asn:AS22222`, []string{"AS11111", "AS22222"}},
-		{"boolean_and", `asn:AS11111 AND page.url.keyword:https://accept.example.com/one`, []string{"AS11111"}},
+		{"boolean_and", `asn:AS11111 AND page.url.keyword:"https://accept.example.com/one"`, []string{"AS11111"}},
 		{"wildcard", `asn:AS*`, []string{"AS11111", "AS22222", "AS33333"}},
 		{"range", `asn:AS11111 AND @timestamp:[now-30d TO now]`, []string{"AS11111"}},
 		{"phrase_on_url", `page.url:"/one"`, []string{"AS11111"}},

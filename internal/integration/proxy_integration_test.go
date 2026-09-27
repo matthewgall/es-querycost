@@ -652,8 +652,21 @@ func TestProxyEnterprisePlanAllowsExpensiveQuery(t *testing.T) {
 
 func createIndex(t *testing.T, index string) {
 	t.Helper()
-	url := esURL(t) + "/" + index
-	req, _ := http.NewRequest(http.MethodPut, url, strings.NewReader(`{
+	base := esURL(t) + "/" + index
+
+	// Clean up any stale data from a previous run so each test starts fresh.
+	delReq, _ := http.NewRequest(http.MethodDelete, base+"?ignore_unavailable=true", http.NoBody)
+	if user, pass := esAuth(); user != "" {
+		delReq.SetBasicAuth(user, pass)
+	}
+	resp, err := esClient().Do(delReq)
+	if err == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	} // ignore errors; index may not exist yet
+	_ = err
+
+	req, _ := http.NewRequest(http.MethodPut, base, strings.NewReader(`{
 		"settings": {"number_of_shards": 1, "number_of_replicas": 0},
 		"mappings": {
 			"properties": {
@@ -667,12 +680,12 @@ func createIndex(t *testing.T, index string) {
 	if user, pass := esAuth(); user != "" {
 		req.SetBasicAuth(user, pass)
 	}
-	resp, err := esClient().Do(req)
+	resp, err = esClient().Do(req)
 	if err != nil {
 		t.Fatalf("create index %s: %v", index, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusBadRequest {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("create index %s failed: %d %s", index, resp.StatusCode, string(body))
 	}
