@@ -22,6 +22,7 @@ import (
 	"es-querycost/internal/cost"
 	"es-querycost/internal/logger"
 	"es-querycost/internal/metrics"
+	"es-querycost/internal/openapi"
 	"es-querycost/internal/query"
 	"es-querycost/internal/rules"
 	"es-querycost/internal/validate"
@@ -167,6 +168,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/search", s.handleSearch)
 	mux.HandleFunc("/validate", s.handleValidate)
 	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/openapi.json", s.handleOpenAPI)
+	if st.cfg.Metrics.Path != "/" {
+		mux.HandleFunc("/", s.handleDocs)
+	}
 	if s.metrics != nil && st.cfg.Metrics.Path != "" {
 		if _, ok := st.authenticator.(auth.NoOp); ok {
 			mux.Handle(st.cfg.Metrics.Path, s.metrics.Handler())
@@ -181,6 +186,28 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(openapi.Spec())
+}
+
+func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if r.URL.Path != "/" {
+		writeError(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(openapi.UI())
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {

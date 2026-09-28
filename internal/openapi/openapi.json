@@ -1,0 +1,388 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "es-querycost API",
+    "description": "Elasticsearch query-cost gate and proxy. The service validates a Lucene-style query against configurable cost and policy rules, optionally enforces authentication (API key or JWT), and forwards allowed queries to Elasticsearch. Authentication is required only when the server is configured for it.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "Default local server"
+    }
+  ],
+  "tags": [
+    { "name": "Query gate" },
+    { "name": "Proxy" },
+    { "name": "System" }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": ["System"],
+        "summary": "API documentation UI",
+        "description": "Interactive OpenAPI/Swagger UI describing this API. The UI loads the schema from /openapi.json.",
+        "operationId": "getDocsUI",
+        "responses": {
+          "200": {
+            "description": "HTML page rendering the API documentation",
+            "content": {
+              "text/html": {}
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": ["System"],
+        "summary": "OpenAPI schema",
+        "description": "Returns the OpenAPI 3.0.3 JSON schema describing this API.",
+        "operationId": "getOpenAPISchema",
+        "responses": {
+          "200": {
+            "description": "OpenAPI schema",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Health check",
+        "description": "Liveness endpoint used by load balancers and orchestrators.",
+        "operationId": "getHealthz",
+        "responses": {
+          "200": {
+            "description": "Server is healthy",
+            "content": {
+              "text/plain": {
+                "example": "ok"
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Prometheus metrics",
+        "description": "Prometheus exposition endpoint. When authentication is configured, the same API-key or JWT policy that protects /search and /validate is enforced here.",
+        "operationId": "getMetrics",
+        "security": [
+          { "apiKey": [] },
+          { "bearerAuth": [] }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prometheus text format metrics",
+            "content": {
+              "text/plain": {}
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/search": {
+      "post": {
+        "tags": ["Query gate"],
+        "summary": "Search Elasticsearch through the cost gate",
+        "description": "Validates the supplied Lucene query against cost and policy rules. If allowed, the query is forwarded to Elasticsearch and the raw ES response is returned. If denied, a structured response explains why.",
+        "operationId": "search",
+        "security": [
+          { "apiKey": [] },
+          { "bearerAuth": [] }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Query allowed and forwarded; response is the raw Elasticsearch search response.",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "402": {
+            "description": "Query denied by cost or policy rules.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "413": {
+            "$ref": "#/components/responses/RequestEntityTooLarge"
+          },
+          "502": {
+            "$ref": "#/components/responses/BadGateway"
+          }
+        }
+      }
+    },
+    "/validate": {
+      "post": {
+        "tags": ["Query gate"],
+        "summary": "Validate a query without executing it",
+        "description": "Run the same validation and cost estimation that /search performs, but do not forward the query to Elasticsearch. Returns whether the query would be allowed.",
+        "operationId": "validate",
+        "security": [
+          { "apiKey": [] },
+          { "bearerAuth": [] }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Validation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "413": {
+            "$ref": "#/components/responses/RequestEntityTooLarge"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SearchRequest": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Lucene-style query string to validate and forward.",
+            "example": "asn:AS13335 AND page.url.keyword:*lidl*"
+          },
+          "index": {
+            "type": "string",
+            "description": "Optional Elasticsearch index or index pattern to search. If omitted, the request is sent to /_search.",
+            "example": "logs-*"
+          },
+          "context": {
+            "type": "object",
+            "description": "Optional user context used by policy rules such as plan limits and window restrictions.",
+            "example": {
+              "user": {
+                "plan": "starter"
+              }
+            }
+          },
+          "source": {
+            "type": "object",
+            "description": "Optional raw Elasticsearch search body. The `query` field is not allowed here; it is injected from the top-level `query`. Allowed fields include size, from, sort, _source, fields, track_total_hits, and collapse.",
+            "properties": {
+              "size": { "type": "integer" },
+              "from": { "type": "integer" },
+              "sort": { "type": "object" },
+              "_source": { "type": ["boolean", "array", "object"] },
+              "fields": { "type": "array" },
+              "track_total_hits": { "type": ["boolean", "integer"] },
+              "collapse": { "type": "object" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "required": ["allowed", "cost"],
+        "properties": {
+          "allowed": {
+            "type": "boolean",
+            "description": "Whether the query is allowed to execute."
+          },
+          "cost": {
+            "type": "number",
+            "description": "Estimated cost of the query."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Human-readable reason when the query is denied."
+          },
+          "report": {
+            "$ref": "#/components/schemas/CostReport"
+          }
+        }
+      },
+      "CostReport": {
+        "type": "object",
+        "required": ["cost", "breakdown", "explanation"],
+        "properties": {
+          "cost": {
+            "type": "number",
+            "description": "Total estimated cost."
+          },
+          "breakdown": {
+            "type": "object",
+            "description": "Per-feature cost contributions.",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "explanation": {
+            "type": "array",
+            "description": "Human-readable cost explanation lines.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Machine-readable error code."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable error message."
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "The request body was invalid, the query was malformed, or validation failed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Authentication failed or no credentials were supplied while authentication is configured.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "The endpoint does not support the HTTP method used.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "RequestEntityTooLarge": {
+        "description": "The request body exceeded the 1 MiB limit.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "BadGateway": {
+        "description": "The request to Elasticsearch failed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Static API key configured in the server."
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT obtained from the configured JWKS endpoint."
+      }
+    }
+  }
+}
