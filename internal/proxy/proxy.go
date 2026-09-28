@@ -198,12 +198,12 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-		return
-	}
 	if r.URL.Path != "/" {
 		writeError(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
